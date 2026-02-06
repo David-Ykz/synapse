@@ -1,16 +1,22 @@
 package client
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net"
+	"synapse/common"
+	"time"
 )
 
 type Config struct {
-	Host       string
-	Port       int
-	ClientType byte
-	Namespace  string
+	Host              string
+	Port              int
+	PacketType        common.PacketType
+	DefaultNamespace  string
+	BatchSize         int
+	PollIntervalMs    int
+	PollBackoff       bool
+	MaxPollIntervalMs int
+	MaxRetry          int
 }
 
 type Client struct {
@@ -34,17 +40,49 @@ func (p *Client) Connect() error {
 	return nil
 }
 
-func (p *Client) Send(payload string) error {
-	header := make([]byte, 8)
-	header[2] = p.config.ClientType
-	header[3] = byte(len(p.config.Namespace))
-	binary.BigEndian.PutUint32(header[4:8], uint32(len(payload)))
-	packet := append(header, []byte(p.config.Namespace)...)
-	packet = append(packet, []byte(payload)...)
-
-	_, err := p.connection.Write(packet)
+func (p *Client) Send(payload string, namespace string) error {
+	if namespace == "" {
+		namespace = p.config.DefaultNamespace
+	}
+	err := common.WritePacket(p.connection, p.config.PacketType, namespace, payload)
 	if err != nil {
 		return fmt.Errorf("error sending message to broker: %w", err)
 	}
 	return nil
+}
+
+func (p *Client) Disconnect(namespace string) error {
+	if namespace == "" {
+		namespace = p.config.DefaultNamespace
+	}
+	err := common.WritePacket(p.connection, common.DISCONNECT, namespace, "")
+	if err != nil {
+		return fmt.Errorf("error sending message to broker: %w", err)
+	}
+	p.connection.Close()
+	return nil
+}
+
+func (p *Client) Poll(namespace string) (payload string, err error) {
+	for {
+		err = p.Send("", namespace)
+		if err != nil {
+			return
+		}
+
+		_, _, payload, err = common.ReadPacket(p.connection)
+		if err != nil {
+			return
+		}
+		if payload == "" {
+			fmt.Println("No message")
+		} else {
+			fmt.Println("Received message:", payload)
+		}
+		time.Sleep(time.Duration(p.config.PollIntervalMs) * time.Millisecond)
+	}
+}
+
+func (p *Client) Push(namespace string, data string) error {
+	return p.Send(data, namespace)
 }
