@@ -21,11 +21,13 @@ func main() {
 		PollIntervalMs:   1000,
 	}
 	config3 := client.Config{
-		Host:             "localhost",
-		Port:             8080,
-		PacketType:       common.CONSUMER_MESSAGE,
-		DefaultNamespace: "namespace2",
-		PollIntervalMs:   1000,
+		Host:              "localhost",
+		Port:              8080,
+		PacketType:        common.CONSUMER_MESSAGE,
+		DefaultNamespace:  "namespace2",
+		PollIntervalMs:    100,
+		MaxPollIntervalMs: 2000,
+		PollBackoff:       true,
 	}
 
 	p1 := client.NewClient(config1)

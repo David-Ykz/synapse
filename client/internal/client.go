@@ -64,6 +64,7 @@ func (p *Client) Disconnect(namespace string) error {
 }
 
 func (p *Client) Poll(namespace string) (payload string, err error) {
+	pollInterval := p.config.PollIntervalMs
 	for {
 		err = p.Send("", namespace)
 		if err != nil {
@@ -76,10 +77,18 @@ func (p *Client) Poll(namespace string) (payload string, err error) {
 		}
 		if payload == "" {
 			fmt.Println("No message")
+			if p.config.PollBackoff {
+				if p.config.MaxPollIntervalMs < p.config.PollIntervalMs {
+					fmt.Println("Max poll interval is less than default poll interval")
+					return
+				}
+				pollInterval = min(p.config.MaxPollIntervalMs, 2*pollInterval)
+			}
 		} else {
 			fmt.Println("Received message:", payload)
+			pollInterval = p.config.PollIntervalMs
 		}
-		time.Sleep(time.Duration(p.config.PollIntervalMs) * time.Millisecond)
+		time.Sleep(time.Duration(pollInterval) * time.Millisecond)
 	}
 }
 
