@@ -30,7 +30,7 @@ func exists(filename string) bool {
 	return err == nil
 }
 
-func write(filename string, bufferSize int, data string) error {
+func write(filename string, bufferSize int, data []byte) error {
 	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("write() failed to open file: %w", err)
@@ -38,7 +38,7 @@ func write(filename string, bufferSize int, data string) error {
 	defer f.Close()
 
 	writer := bufio.NewWriterSize(f, bufferSize)
-	_, err = writer.WriteString(data)
+	_, err = writer.Write(data)
 	if err != nil {
 		return fmt.Errorf("write() failed to write data to file: %w", err)
 	}
@@ -54,7 +54,7 @@ func writeInt64(filename string, val int64) error {
 
 	err = binary.Write(f, binary.LittleEndian, val)
 	if err != nil {
-		return fmt.Errorf("write() failed to write data to file: %w", err)
+		return fmt.Errorf("writeInt64() failed to write data to file: %w", err)
 	}
 	return nil
 }
@@ -112,29 +112,31 @@ func (b *Broker) Initialize() error {
 	// create directories if they don't exist
 	err := os.MkdirAll(basePath, 0755)
 	if err != nil {
-		return fmt.Errorf("Broker.Initialize() failed to create required directories: %w", err)
+		return fmt.Errorf("Broker.Initialize() failed to create required directories for path %s: %w", basePath, err)
 	}
 
 	// load offsetReadIndex
-	if exists(b.fullFilepath(INDEX_FILE_NAME)) {
-		f, err := os.OpenFile(b.fullFilepath(INDEX_FILE_NAME), os.O_RDWR, 0644)
+	indexFilepath := b.fullFilepath(INDEX_FILE_NAME)
+	if exists(indexFilepath) {
+		f, err := os.OpenFile(indexFilepath, os.O_RDWR, 0644)
 		if err != nil {
-			return fmt.Errorf("Broker.Initialize() failed to open index file: %w", err)
+			return fmt.Errorf("Broker.Initialize() failed to open index file %s: %w", indexFilepath, err)
 		}
 		defer f.Close()
 		_, _ = f.Seek(-8, io.SeekEnd)
 		err = binary.Read(f, binary.LittleEndian, &b.offsetReadIndex)
 		if err != nil {
-			return fmt.Errorf("Broker.Initialize() failed to read index file: %w", err)
+			return fmt.Errorf("Broker.Initialize() failed to read index file %s: %w", indexFilepath, err)
 		}
 		f.Truncate(0)
 	}
 
 	// load offsetWriteIndex and initialize offsets
-	if exists(b.fullFilepath(OFFSET_FILE_NAME)) {
-		f, err := os.Open(b.fullFilepath(OFFSET_FILE_NAME))
+	offsetFilepath := b.fullFilepath(OFFSET_FILE_NAME)
+	if exists(offsetFilepath) {
+		f, err := os.Open(offsetFilepath)
 		if err != nil {
-			return fmt.Errorf("Broker.Initialize() failed to open offset file: %w", err)
+			return fmt.Errorf("Broker.Initialize() failed to open offset file %s: %w", offsetFilepath, err)
 		}
 		defer f.Close()
 
@@ -153,7 +155,7 @@ func (b *Broker) Initialize() error {
 			index := modulo(numRecords-i+1, OFFSET_BUFFER_MAX_SIZE)
 			err = binary.Read(f, binary.LittleEndian, &b.offsets[index])
 			if err != nil {
-				return fmt.Errorf("Broker.Initialize() failed to read offset file: %w", err)
+				return fmt.Errorf("Broker.Initialize() failed to read offset file %s: %w", offsetFilepath, err)
 			}
 		}
 	}
@@ -163,11 +165,12 @@ func (b *Broker) Initialize() error {
 	return nil
 }
 
-func (b *Broker) Write(data string) error {
+func (b *Broker) Write(data []byte) error {
 	// write the data
-	err := write(b.fullFilepath(DATA_FILE_NAME), b.writeBufferSize, data)
+	dataFilepath := b.fullFilepath(DATA_FILE_NAME)
+	err := write(dataFilepath, b.writeBufferSize, data)
 	if err != nil {
-		return fmt.Errorf("Broker.Write() failed to write to data file: %w", err)
+		return fmt.Errorf("Broker.Write() failed to write to data file %s: %w", dataFilepath, err)
 	}
 	// get previous offset
 	prevOffset := b.offsets[b.offsetWriteIndex%OFFSET_BUFFER_MAX_SIZE]
@@ -176,9 +179,10 @@ func (b *Broker) Write(data string) error {
 	b.offsetWriteIndex++
 	b.offsets[b.offsetWriteIndex%OFFSET_BUFFER_MAX_SIZE] = newOffset
 	// store new offset (for persistence)
-	err = writeInt64(b.fullFilepath(OFFSET_FILE_NAME), newOffset)
+	offsetFilepath := b.fullFilepath(OFFSET_FILE_NAME)
+	err = writeInt64(offsetFilepath, newOffset)
 	if err != nil {
-		return fmt.Errorf("Broker.Write() failed to write to offset file: %w", err)
+		return fmt.Errorf("Broker.Write() failed to write to offset file %s: %w", offsetFilepath, err)
 	}
 	return nil
 }
@@ -192,14 +196,19 @@ func (b *Broker) ReadOne() ([]byte, error) {
 	endOffset := b.offsets[b.offsetReadIndex+1]
 
 	// read data
-	data, err := read(b.fullFilepath(DATA_FILE_NAME), startOffset, endOffset)
+	dataFilepath := b.fullFilepath(DATA_FILE_NAME)
+	data, err := read(dataFilepath, startOffset, endOffset)
 	if err != nil {
-		return nil, fmt.Errorf("ReadOne() failed to read data (index %d-%d): %w", startOffset, endOffset, err)
+		return nil, fmt.Errorf("Broker.ReadOne() failed from data file %s at offset %d - %d: %w", dataFilepath, startOffset, endOffset, err)
 	}
 	// increment index
 	b.offsetReadIndex++
 	// store index
-	writeInt64(b.fullFilepath(INDEX_FILE_NAME), b.offsetReadIndex)
+	indexFilepath := b.fullFilepath(INDEX_FILE_NAME)
+	err = writeInt64(indexFilepath, b.offsetReadIndex)
+	if err != nil {
+		return nil, fmt.Errorf("Broker.ReadOne() failed to write to index file %s: %w", indexFilepath, err)
+	}
 	return data, nil
 }
 

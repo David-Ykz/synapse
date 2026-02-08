@@ -27,34 +27,46 @@ func (s *Server) handleConnection(conn net.Conn) {
 	for {
 		packetType, namespace, data, err := common.ReadPacket(conn)
 		if err != nil {
-			fmt.Println("Error in reading packet:", err)
+			fmt.Println("Server.handleConnection() failed to read packet:", err)
 			return
 		}
-		broker, exists := s.Brokers[namespace]
 
+		broker, exists := s.Brokers[namespace]
 		if !exists {
+			fmt.Printf("No broker found, creating broker in namespace %s with filepath %s\n", namespace, s.brokerFilepath)
 			broker = NewBroker(0, namespace, s.brokerFilepath, s.brokerWriteBufferSize)
-			broker.Initialize()
+			err = broker.Initialize()
+			if err != nil {
+				fmt.Printf("Server.handleConnection() failed to initialize broker in namespace %s: %s\n", namespace, err)
+			}
 			s.Brokers[namespace] = broker
 		}
 		switch packetType {
 		case common.DISCONNECT:
+			fmt.Println("Client disconnected from namespace", namespace)
 			return
 		case common.PRODUCER_MESSAGE:
-			fmt.Printf("Recived message from producer in namespace %s: %s\n", namespace, data)
+			fmt.Printf("Received message from producer in namespace %s: %s\n", namespace, data)
 			err = broker.Write(data)
 			if err != nil {
-				fmt.Println("Error in writing to broker:", err)
+				fmt.Printf("Server.handleConnection() failed to write data to broker in namespace %s: %s\n", namespace, err)
 				return
 			}
 		case common.CONSUMER_MESSAGE:
+			fmt.Printf("Received request from consumer in namespace %s\n", namespace)
 			response, err := broker.ReadOne()
 			if err != nil {
-				fmt.Printf("Error reading from broker in namespace %s: %s\n", namespace, err)
-				common.WritePacket(conn, common.SERVER_ERROR, namespace, "")
+				fmt.Printf("Server.handleConnection() failed to read from broker in namespace %s: %s\n", namespace, err)
+				err = common.WritePacket(conn, common.SERVER_ERROR, namespace, []byte(""))
+				if err != nil {
+					fmt.Println("Server.handleConnection() failed to return a server error message:", err)
+				}
 				return
 			}
-			common.WritePacket(conn, common.SERVER_MESSAGE, namespace, string(response))
+			err = common.WritePacket(conn, common.SERVER_MESSAGE, namespace, response)
+			if err != nil {
+				fmt.Println("Server.handleConnection() failed to return a server response message:", err)
+			}
 		}
 	}
 }
@@ -69,7 +81,7 @@ func (s *Server) Start() error {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("Error accepting connection", err)
+			fmt.Println("Error accepting connection:", err)
 			continue
 		}
 		go s.handleConnection(conn)
