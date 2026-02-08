@@ -7,11 +7,19 @@ import (
 )
 
 type Server struct {
-	Port int
+	Port                  int
+	Brokers               map[string]*Broker
+	brokerFilepath        string
+	brokerWriteBufferSize int
 }
 
-func NewServer(port int) *Server {
-	return &Server{Port: port}
+func NewServer(port int, filepath string, bufferSize int) *Server {
+	return &Server{
+		Port:                  port,
+		Brokers:               make(map[string]*Broker),
+		brokerFilepath:        filepath,
+		brokerWriteBufferSize: bufferSize,
+	}
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
@@ -22,45 +30,36 @@ func (s *Server) handleConnection(conn net.Conn) {
 			fmt.Println("Error in reading packet:", err)
 			return
 		}
+		broker, exists := s.Brokers[namespace]
+
+		if !exists {
+			broker = NewBroker(0, namespace, s.brokerFilepath, s.brokerWriteBufferSize)
+			broker.Initialize()
+			s.Brokers[namespace] = broker
+		}
 		switch packetType {
 		case common.DISCONNECT:
 			return
 		case common.PRODUCER_MESSAGE:
 			fmt.Printf("Recived message from producer in namespace %s: %s\n", namespace, data)
-		case common.CONSUMER_MESSAGE:
-			if namespace == "namespace1" {
-				common.WritePacket(conn, common.SERVER_MESSAGE, namespace, "World Hello")
-			} else {
-				common.WritePacket(conn, common.SERVER_MESSAGE, namespace, "")
+			err = broker.Write(data)
+			if err != nil {
+				fmt.Println("Error in writing to broker:", err)
+				return
 			}
+		case common.CONSUMER_MESSAGE:
+			response, err := broker.ReadOne()
+			if err != nil {
+				fmt.Printf("Error reading from broker in namespace %s: %s\n", namespace, err)
+				common.WritePacket(conn, common.SERVER_ERROR, namespace, "")
+				return
+			}
+			common.WritePacket(conn, common.SERVER_MESSAGE, namespace, string(response))
 		}
 	}
 }
 
 func (s *Server) Start() error {
-	broker := NewBroker(0, "namespace1", "/home/kzdavid/Documents/Github/synapse/temp", 4096)
-	err := broker.Initialize()
-	if err != nil {
-		return err
-	}
-
-	err = broker.Write("Message 1")
-	if err != nil {
-		return err
-	}
-
-	data, err := broker.ReadOne()
-	if err != nil {
-		return err
-	}
-	fmt.Println(string(data))
-	broker.Write("Message 2")
-	broker.Write("Message 3")
-	data, _ = broker.ReadOne()
-	fmt.Println(string(data))
-
-	broker.Print()
-
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", s.Port))
 	if err != nil {
 		return err

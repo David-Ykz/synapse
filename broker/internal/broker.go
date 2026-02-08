@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	DATA_FILE_NAME               = "/data"
-	OFFSET_FILE_NAME             = "/offset"
-	INDEX_FILE_NAME              = "/index"
+	DATA_FILE_NAME               = "data"
+	OFFSET_FILE_NAME             = "offset"
+	INDEX_FILE_NAME              = "index"
 	OFFSET_BUFFER_MAX_SIZE int64 = 4096
 )
 
@@ -96,6 +96,7 @@ func modulo(n int64, m int64) int64 {
 func NewBroker(id int, namespace string, filepath string, writeBufferSize int) *Broker {
 	return &Broker{
 		id:              id,
+		namespace:       namespace,
 		filepath:        filepath,
 		writeBufferSize: writeBufferSize,
 	}
@@ -107,7 +108,7 @@ func (b *Broker) fullFilepath(filename string) string {
 
 func (b *Broker) Initialize() error {
 	basePath := b.fullFilepath("")
-
+	fmt.Println(basePath)
 	// create directories if they don't exist
 	err := os.MkdirAll(basePath, 0755)
 	if err != nil {
@@ -183,15 +184,12 @@ func (b *Broker) Write(data string) error {
 }
 
 func (b *Broker) ReadOne() ([]byte, error) {
-	if b.offsetReadIndex > b.offsetWriteIndex {
+	if b.offsetReadIndex >= b.offsetWriteIndex {
 		return nil, nil
 	}
 
 	startOffset := b.offsets[b.offsetReadIndex]
 	endOffset := b.offsets[b.offsetReadIndex+1]
-	if b.offsetReadIndex == b.offsetWriteIndex {
-		endOffset = 0
-	}
 
 	// read data
 	data, err := read(b.fullFilepath(DATA_FILE_NAME), startOffset, endOffset)
