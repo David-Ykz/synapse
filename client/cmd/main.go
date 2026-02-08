@@ -37,7 +37,7 @@ func main() {
 	p2.Connect()
 	p3.Connect()
 
-	p1.Push("", "Hello World")
+	p1.Push("", []byte("Hello World"))
 	time.Sleep(1 * time.Second)
 
 	go p2.Poll("")

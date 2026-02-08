@@ -34,19 +34,19 @@ func (p *Client) Connect() error {
 	addr := net.JoinHostPort(p.config.Host, fmt.Sprintf("%d", p.config.Port))
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("error connecting to broker: %w", err)
+		return fmt.Errorf("Client.Connect() failed to connect to broker at address %s: %w", addr, err)
 	}
 	p.connection = conn
 	return nil
 }
 
-func (p *Client) Send(payload string, namespace string) error {
+func (p *Client) Send(payload []byte, namespace string) error {
 	if namespace == "" {
 		namespace = p.config.DefaultNamespace
 	}
 	err := common.WritePacket(p.connection, p.config.PacketType, namespace, payload)
 	if err != nil {
-		return fmt.Errorf("error sending message to broker: %w", err)
+		return fmt.Errorf("Client.Send() failed to send message to broker at namespace %s: %w", namespace, err)
 	}
 	return nil
 }
@@ -55,28 +55,29 @@ func (p *Client) Disconnect(namespace string) error {
 	if namespace == "" {
 		namespace = p.config.DefaultNamespace
 	}
-	err := common.WritePacket(p.connection, common.DISCONNECT, namespace, "")
+	err := common.WritePacket(p.connection, common.DISCONNECT, namespace, []byte(""))
 	if err != nil {
-		return fmt.Errorf("error sending message to broker: %w", err)
+		return fmt.Errorf("Client.Disconnect() failed to send message to broker at namespace %s: %w", namespace, err)
 	}
 	p.connection.Close()
 	return nil
 }
 
-func (p *Client) Poll(namespace string) (payload string, err error) {
+func (p *Client) Poll(namespace string) (payload []byte, err error) {
 	pollInterval := p.config.PollIntervalMs
 	for {
-		err = p.Send("", namespace)
+		err = p.Send([]byte(""), namespace)
 		if err != nil {
+			err = fmt.Errorf("Client.Poll() failed to send poll request: %w", err)
 			return
 		}
 
 		_, _, payload, err = common.ReadPacket(p.connection)
 		if err != nil {
+			err = fmt.Errorf("Client.Poll() failed to read poll response: %w", err)
 			return
 		}
-		if payload == "" {
-			fmt.Println("No message")
+		if len(payload) == 0 {
 			if p.config.PollBackoff {
 				if p.config.MaxPollIntervalMs < p.config.PollIntervalMs {
 					fmt.Println("Max poll interval is less than default poll interval")
@@ -85,13 +86,13 @@ func (p *Client) Poll(namespace string) (payload string, err error) {
 				pollInterval = min(p.config.MaxPollIntervalMs, 2*pollInterval)
 			}
 		} else {
-			fmt.Println("Received message:", payload)
+			fmt.Println("Received message:", string(payload))
 			pollInterval = p.config.PollIntervalMs
 		}
 		time.Sleep(time.Duration(pollInterval) * time.Millisecond)
 	}
 }
 
-func (p *Client) Push(namespace string, data string) error {
+func (p *Client) Push(namespace string, data []byte) error {
 	return p.Send(data, namespace)
 }

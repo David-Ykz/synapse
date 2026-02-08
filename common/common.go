@@ -13,14 +13,15 @@ const (
 	DISCONNECT PacketType = iota
 	PRODUCER_MESSAGE
 	CONSUMER_MESSAGE
+	SERVER_ERROR
 	SERVER_MESSAGE
 )
 
-func ReadPacket(conn net.Conn) (packetType PacketType, namespace string, payload string, err error) {
+func ReadPacket(conn net.Conn) (packetType PacketType, namespace string, payload []byte, err error) {
 	header := make([]byte, 8)
 	_, err = io.ReadFull(conn, header)
 	if err != nil {
-		err = fmt.Errorf("Error reading header: %w", err)
+		err = fmt.Errorf("ReadPacket() failed to read header: %w", err)
 		return
 	}
 	packetType = PacketType(header[2])
@@ -30,7 +31,7 @@ func ReadPacket(conn net.Conn) (packetType PacketType, namespace string, payload
 	namespaceBuffer := make([]byte, namespaceLength)
 	_, err = io.ReadFull(conn, namespaceBuffer)
 	if err != nil {
-		err = fmt.Errorf("Error reading namespace: %w", err)
+		err = fmt.Errorf("ReadPacket() failed to read namespace: %w", err)
 		return
 	}
 	namespace = string(namespaceBuffer)
@@ -38,34 +39,34 @@ func ReadPacket(conn net.Conn) (packetType PacketType, namespace string, payload
 	if payloadLength == 0 {
 		return
 	}
-	payloadBytes := make([]byte, payloadLength)
-	_, err = io.ReadFull(conn, payloadBytes)
+	payload = make([]byte, payloadLength)
+	_, err = io.ReadFull(conn, payload)
 	if err != nil {
-		err = fmt.Errorf("Error reading payload: %w", err)
-		return
+		err = fmt.Errorf("ReadPacket() failed to read payload: %w", err)
 	}
-	payload = string(payloadBytes)
 
 	return
 }
 
-func WritePacket(conn net.Conn, packetType PacketType, namespace string, payload string) error {
+func WritePacket(conn net.Conn, packetType PacketType, namespace string, payload []byte) error {
 	header := make([]byte, 8)
 	header[2] = byte(packetType)
 	header[3] = byte(len(namespace))
 	binary.BigEndian.PutUint32(header[4:8], uint32(len(payload)))
 
-	if _, err := conn.Write(header); err != nil {
-		err = fmt.Errorf("Error writing header: %w", err)
-		return err
+	_, err := conn.Write(header)
+	if err != nil {
+		return fmt.Errorf("WritePacket() failed to write header: %w", err)
 	}
-	if _, err := conn.Write([]byte(namespace)); err != nil {
-		err = fmt.Errorf("Error writing namespace: %w", err)
-		return err
+
+	_, err = conn.Write([]byte(namespace))
+	if err != nil {
+		return fmt.Errorf("WritePacket() failed to write: %w", err)
 	}
-	if _, err := conn.Write([]byte(payload)); err != nil {
-		err = fmt.Errorf("Error writing payload: %w", err)
-		return err
+
+	_, err = conn.Write(payload)
+	if err != nil {
+		return fmt.Errorf("WritePacket() failed to write payload: %w", err)
 	}
 
 	return nil
