@@ -17,6 +17,26 @@ const (
 	SERVER_MESSAGE
 )
 
+type TaskStatus byte
+
+const (
+	CREATED TaskStatus = iota
+	CONSUMED
+	COMPLETED
+	CONSTRAINT_VIOLATION
+	ERROR
+)
+
+type Task struct {
+	TaskId             string     `json:"task_id"`
+	RequestId          string     `json:"request_id"`
+	Status             TaskStatus `json:"task_status"`
+	Prompt             string     `json:"prompt"`
+	Context            string     `json:"context"`
+	CreatedTimestamp   int64      `json:"created_timestamp"`
+	CompletedTimestamp int64      `json:"completed_timestamp"`
+}
+
 func ReadPacket(conn net.Conn) (packetType PacketType, namespace string, payload []byte, err error) {
 	header := make([]byte, 8)
 	_, err = io.ReadFull(conn, header)
