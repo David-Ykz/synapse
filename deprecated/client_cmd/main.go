@@ -2,7 +2,6 @@ package main
 
 import (
 	client "synapse/client/internal"
-	"synapse/common"
 	"time"
 )
 
@@ -10,20 +9,17 @@ func main() {
 	config1 := client.Config{
 		Host:             "localhost",
 		Port:             8080,
-		PacketType:       common.PRODUCER_MESSAGE,
 		DefaultNamespace: "namespace1",
 	}
 	config2 := client.Config{
 		Host:             "localhost",
 		Port:             8080,
-		PacketType:       common.CONSUMER_MESSAGE,
 		DefaultNamespace: "namespace1",
 		PollIntervalMs:   1000,
 	}
 	config3 := client.Config{
 		Host:              "localhost",
 		Port:              8080,
-		PacketType:        common.CONSUMER_MESSAGE,
 		DefaultNamespace:  "namespace2",
 		PollIntervalMs:    100,
 		MaxPollIntervalMs: 2000,

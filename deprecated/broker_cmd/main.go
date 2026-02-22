@@ -6,7 +6,7 @@ import (
 )
 
 func main() {
-	server := broker.NewServer(8080, "/home/kzdavid/Documents/Github/synapse/temp", 4096)
+	server := broker.NewServer(8080, "/home/kzdavid/Github/synapse/temp", 4096)
 	err := server.Start()
 	if err != nil {
 		fmt.Println("Server exited with error", err)
