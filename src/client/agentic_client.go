@@ -3,13 +3,12 @@ package client
 import (
 	"encoding/json"
 	"fmt"
-	"synapse/common"
+	"synapse/src/common"
 )
 
 type AgenticClient struct {
-	basicClient      *BasicClient
-	task             common.Task
-	defaultNamespace string
+	basicClient *BasicClient
+	Task        common.Task
 }
 
 func NewAgenticClient(config Config) *AgenticClient {
@@ -24,15 +23,15 @@ func (a *AgenticClient) Connect() error {
 }
 
 func (a *AgenticClient) Disconnect() error {
-	return a.basicClient.Disconnect(a.defaultNamespace)
+	return a.basicClient.Disconnect(a.basicClient.config.DefaultNamespace)
 }
 
 func (a *AgenticClient) GetTask() error {
-	payload, err := a.basicClient.Consume(a.defaultNamespace)
+	payload, err := a.basicClient.Consume(a.basicClient.config.DefaultNamespace)
 	if err != nil {
 		return fmt.Errorf("AgenticClient.GetTask() failed to consume event: %w", err)
 	}
-	err = json.Unmarshal(payload, &a.task)
+	err = json.Unmarshal(payload, &a.Task)
 	if err != nil {
 		return fmt.Errorf("AgenticClient.GetTask() failed to parse json: %w", err)
 	}
@@ -40,14 +39,12 @@ func (a *AgenticClient) GetTask() error {
 }
 
 func (a *AgenticClient) FinishTask(namespace string) error {
-	payload, err := json.Marshal(a.task)
+	payload, err := json.Marshal(a.Task)
 	if err != nil {
 		return fmt.Errorf("AgenticClient.FinishTask() failed to convert task to bytes: %w", err)
 	}
-	if namespace == "" {
-		namespace = a.defaultNamespace
-	}
-	err = a.basicClient.Produce(namespace, payload)
+
+	err = a.basicClient.Produce(a.basicClient.config.DefaultNamespace, payload)
 	if err != nil {
 		return fmt.Errorf("AgenticClient.FinishTask() failed to produce data to broker: %w", err)
 	}

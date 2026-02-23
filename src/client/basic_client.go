@@ -3,7 +3,7 @@ package client
 import (
 	"fmt"
 	"net"
-	"synapse/common"
+	"synapse/src/common"
 	"time"
 )
 
@@ -39,9 +39,6 @@ func (b *BasicClient) Connect() error {
 }
 
 func (b *BasicClient) Disconnect(namespace string) error {
-	if namespace == "" {
-		namespace = b.config.DefaultNamespace
-	}
 	err := common.WritePacket(b.connection, common.DISCONNECT, namespace, []byte(""))
 	if err != nil {
 		return fmt.Errorf("BasicClient.Disconnect() failed to send message to broker at namespace %s: %w", namespace, err)

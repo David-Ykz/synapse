@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	broker "synapse/broker/internal"
+	broker "synapse/src/broker"
 )
 
 func main() {

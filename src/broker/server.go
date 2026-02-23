@@ -3,7 +3,7 @@ package broker
 import (
 	"fmt"
 	"net"
-	"synapse/common"
+	common "synapse/src/common"
 )
 
 type Server struct {
