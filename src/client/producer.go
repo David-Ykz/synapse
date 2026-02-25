@@ -7,13 +7,6 @@ import (
 	"synapse/src/common"
 )
 
-// potential TODO
-// type ProducerConfig struct {
-// 	common.Config
-// 	BatchSize          int
-// 	MaxWriteIntervalMs int
-// }
-
 type Producer struct {
 	common.Config
 	ctx             context.Context

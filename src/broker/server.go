@@ -11,14 +11,16 @@ type Server struct {
 	Brokers               map[string]*Broker
 	brokerFilepath        string
 	brokerWriteBufferSize int
+	debug                 bool
 }
 
-func NewServer(port int, filepath string, bufferSize int) *Server {
+func NewServer(port int, filepath string, bufferSize int, debug bool) *Server {
 	return &Server{
 		Port:                  port,
 		Brokers:               make(map[string]*Broker),
 		brokerFilepath:        filepath,
 		brokerWriteBufferSize: bufferSize,
+		debug:                 debug,
 	}
 }
 
@@ -33,7 +35,9 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 		broker, exists := s.Brokers[namespace]
 		if !exists {
-			fmt.Printf("No broker found, creating broker in namespace %s with filepath %s\n", namespace, s.brokerFilepath)
+			if s.debug {
+				fmt.Printf("No broker found, creating broker in namespace %s with filepath %s\n", namespace, s.brokerFilepath)
+			}
 			broker = NewBroker(0, namespace, s.brokerFilepath, s.brokerWriteBufferSize)
 			err = broker.Initialize()
 			if err != nil {
@@ -43,17 +47,23 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 		switch packetType {
 		case common.DISCONNECT:
-			fmt.Println("Client disconnected from namespace", namespace)
+			if s.debug {
+				fmt.Println("Client disconnected from namespace", namespace)
+			}
 			return
 		case common.PRODUCER_MESSAGE:
-			fmt.Printf("Received message from producer in namespace %s: %s\n", namespace, data)
+			if s.debug {
+				fmt.Printf("Received message from producer in namespace %s: %s\n", namespace, data)
+			}
 			err = broker.Write(data)
 			if err != nil {
 				fmt.Printf("Server.handleConnection() failed to write data to broker in namespace %s: %s\n", namespace, err)
 				return
 			}
 		case common.CONSUMER_MESSAGE:
-			fmt.Printf("Received request from consumer in namespace %s\n", namespace)
+			if s.debug {
+				fmt.Printf("Received request from consumer in namespace %s\n", namespace)
+			}
 			response, err := broker.ReadOne()
 			if err != nil {
 				fmt.Printf("Server.handleConnection() failed to read from broker in namespace %s: %s\n", namespace, err)
@@ -76,8 +86,9 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("Broker listening on", s.Port)
-
+	if s.debug {
+		fmt.Println("Broker listening on", s.Port)
+	}
 	for {
 		conn, err := listener.Accept()
 		if err != nil {

@@ -2,13 +2,6 @@ package constants
 
 import "synapse/src/common"
 
-const (
-	HandleUserRequest_TaskAllocator   = "HandleUserRequest_TaskAllocator"
-	SUPERVISOR_USER_REQUEST_NAMESPACE = "Supervisor_UserRequest"
-	SUPERVISOR_ATTRACTIONS_NAMESPACE  = "Supervisor_Attractions"
-	ATTRACTIONS_SUPERVISOR_NAMESPACE  = "Attractions_Supervisor"
-)
-
 var (
 	BaseConfig = common.Config{
 		Host:        "localhost",
@@ -26,5 +19,11 @@ func NewUserReqToTaskAllocatorConfig() common.Config {
 func NewTaskAllocatorToAttractionsAgentConfig() common.Config {
 	config := BaseConfig
 	config.Namespace = "TaskAllocator_AttractionsAgent"
+	return config
+}
+
+func NewAttractionsAgentToTaskCombinerConfig() common.Config {
+	config := BaseConfig
+	config.Namespace = "AttractionsAgent_TaskCombiner"
 	return config
 }

@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	model "synapse/example"
 	"synapse/example/constants"
 	"synapse/src/client"
+
 	"time"
 )
 
@@ -15,8 +17,7 @@ func main() {
 	if err != nil {
 		fmt.Println("user_req_handler.go:", err)
 	}
-	msg := "Plan me a trip to Singapore for 2 weeks during April with a budget of $5000"
-	p.Produce([]byte(msg))
+	p.Produce([]byte(model.UserReq_singapore))
 	time.Sleep(5 * time.Second)
 	p.Disconnect()
 }
