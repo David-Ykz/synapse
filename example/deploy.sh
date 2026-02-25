@@ -10,7 +10,7 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM
 
-SERVICES=("example/broker" "example/agents/supervisor_agent"  "example/server")
+SERVICES=("example/broker" "example/agents/task_allocator"  "example/user_req_handler")
 # SERVICES=("example/broker" "example/agents/attractions_agent")
 
 for DIR in "${SERVICES[@]}"; do

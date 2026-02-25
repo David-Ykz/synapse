@@ -30,12 +30,19 @@ const (
 type Task struct {
 	TaskId             string      `json:"task_id"`
 	RequestId          string      `json:"request_id"`
+	Namespace          string      `json:"namespace"`
 	Status             TaskStatus  `json:"task_status"`
-	Prompt             string      `json:"prompt"`
-	Context            string      `json:"context"`
+	Prompt             []byte      `json:"prompt"`
 	Response           interface{} `json:"response"`
 	CreatedTimestamp   int64       `json:"created_timestamp"`
 	CompletedTimestamp int64       `json:"completed_timestamp"`
+}
+
+type Config struct {
+	Host        string
+	Port        int
+	Namespace   string
+	ChannelSize int
 }
 
 func ReadPacket(conn net.Conn) (packetType PacketType, namespace string, payload []byte, err error) {

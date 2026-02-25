@@ -106,17 +106,27 @@ func (s *SupervisorClient) Stop() (err error) {
 	return
 }
 
-func (s *SupervisorClient) AddTask(requestId string, prompt string, context string) *common.Task {
+/* Adds a task to the task list and broadcasts it to the broker */
+func (s *SupervisorClient) AddTask(requestId string, namespace string, prompt []byte) (*common.Task, error) {
 	task := common.Task{
 		RequestId:        requestId,
 		TaskId:           uuid.New().String(),
+		Namespace:        namespace,
 		Status:           common.CREATED,
 		Prompt:           prompt,
-		Context:          context,
 		CreatedTimestamp: time.Now().Unix(),
 	}
 	s.taskList[task.TaskId] = &task
-	return &task
+	payload, err := json.Marshal(task)
+	if err != nil {
+		return nil, fmt.Errorf("SupervisorClient.AddTask() failed to convert task to bytes: %w", err)
+	}
+	fmt.Printf("produced %s\n", namespace)
+	err = s.clients[namespace].Produce(namespace, payload)
+	if err != nil {
+		return nil, fmt.Errorf("SupervisorClient.AddTask() failed to produce task to broker: %w", err)
+	}
+	return &task, nil
 }
 
 func (s *SupervisorClient) RemoveTask(taskId string) *common.Task {

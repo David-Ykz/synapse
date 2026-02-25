@@ -11,8 +11,8 @@ type ModelResponse struct {
 }
 
 type SupervisorModelResponse struct {
-	Prompts []string
-	Context string
+	Namespace string
+	Prompt    []byte
 }
 
 func Query(prompt string, context string) ModelResponse {
@@ -23,13 +23,12 @@ func Query(prompt string, context string) ModelResponse {
 	}
 }
 
-func SupervisorQuery(prompt string, context string) SupervisorModelResponse {
-	time.Sleep(5 * time.Second)
-	return SupervisorModelResponse{
-		Prompts: []string{
-			"Find attractions in Singapore",
+func SupervisorQuery(prompt []byte) []SupervisorModelResponse {
+	return []SupervisorModelResponse{
+		{
+			Namespace: "attractions",
+			Prompt:    []byte("Find attractions in Singapore for under than $5000"),
 		},
-		Context: "Budget is $5000, timeframe is in April",
 	}
 }
 
