@@ -16,7 +16,7 @@ const (
 	BROKER_BUFFER_SIZE  = "BROKER_BUFFER_SIZE"
 	DEFAULT_BUFFER_SIZE = "4096"
 
-	MISSING_ENV_MESSAGE = "%s not found, defaulting to %d"
+	MISSING_ENV_MESSAGE = "%s not found, defaulting to %s"
 )
 
 func main() {
