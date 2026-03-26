@@ -4,7 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"synapse/common"
+
+	"github.com/David-Ykz/synapse/common"
 )
 
 type Producer struct {

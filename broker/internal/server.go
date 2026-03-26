@@ -3,7 +3,8 @@ package broker
 import (
 	"fmt"
 	"net"
-	"synapse/common"
+
+	"github.com/David-Ykz/synapse/common"
 )
 
 type Server struct {

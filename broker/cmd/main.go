@@ -4,28 +4,33 @@ import (
 	"log"
 	"os"
 	"strconv"
-	broker "synapse/broker/internal" // Adjust path as needed
+
+	broker "github.com/David-Ykz/synapse/broker/internal"
 )
 
 const (
-	BROKER_PORT        = "BROKER_PORT"
-	BROKER_FILEPATH    = "BROKER_FILEPATH"
-	BROKER_BUFFER_SIZE = "BROKER_BUFFER_SIZE"
+	BROKER_PORT         = "BROKER_PORT"
+	DEFAULT_PORT        = "8080"
+	BROKER_FILEPATH     = "BROKER_FILEPATH"
+	DEFAULT_FILEPATH    = "data"
+	BROKER_BUFFER_SIZE  = "BROKER_BUFFER_SIZE"
+	DEFAULT_BUFFER_SIZE = "4096"
+
+	MISSING_ENV_MESSAGE = "%s not found, defaulting to %d"
 )
 
 func main() {
-	// 1. Pull config from Environment (Best for K3s)
 	portStr, ok := os.LookupEnv(BROKER_PORT)
 	if !ok {
-		log.Fatalf("Failed to get environment variable %s", BROKER_PORT)
+		log.Printf(MISSING_ENV_MESSAGE, BROKER_PORT, DEFAULT_PORT)
 	}
 	filePath, ok := os.LookupEnv(BROKER_FILEPATH)
 	if !ok {
-		log.Fatalf("Failed to get environment variable %s", BROKER_FILEPATH)
+		log.Printf(MISSING_ENV_MESSAGE, BROKER_FILEPATH, DEFAULT_FILEPATH)
 	}
 	bufferStr, ok := os.LookupEnv(BROKER_BUFFER_SIZE)
 	if !ok {
-		log.Fatalf("Failed to get environment variable %s", BROKER_BUFFER_SIZE)
+		log.Printf(MISSING_ENV_MESSAGE, BROKER_BUFFER_SIZE, DEFAULT_BUFFER_SIZE)
 	}
 
 	port, _ := strconv.Atoi(portStr)

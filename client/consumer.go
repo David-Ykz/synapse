@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"synapse/common"
 	"time"
+
+	"github.com/David-Ykz/synapse/common"
 )
 
 type ConsumerConfig struct {

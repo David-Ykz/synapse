@@ -2,8 +2,9 @@ package main
 
 import (
 	"log"
-	"synapse/client"
-	"synapse/common"
+
+	"github.com/David-Ykz/synapse/client"
+	"github.com/David-Ykz/synapse/common"
 )
 
 var (
