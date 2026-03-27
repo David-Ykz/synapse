@@ -2,6 +2,8 @@ package main
 
 import (
 	"log"
+	"os"
+	"strconv"
 
 	"github.com/David-Ykz/synapse/client"
 	"github.com/David-Ykz/synapse/common"
@@ -32,6 +34,19 @@ func callLLM(input []byte) ([]byte, error) {
 }
 
 func main() {
+	brokerHost := os.Getenv("BROKER_HOST")
+	if brokerHost != "" {
+		consumerConfig.Host = brokerHost
+		producerConfig.Host = brokerHost
+	}
+	brokerPort := os.Getenv("BROKER_PORT")
+	if brokerPort != "" {
+		consumerConfig.Port, _ = strconv.Atoi(brokerPort)
+		producerConfig.Port, _ = strconv.Atoi(brokerPort)
+	}
+	consumerConfig.Namespace = os.Getenv("CONSUMER_NAMESPACE")
+	producerConfig.Namespace = os.Getenv("PRODUCER_NAMESPACE")
+
 	// initialize consumer
 	consumer := client.NewConsumer(consumerConfig)
 	if err := consumer.Connect(); err != nil {
