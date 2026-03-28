@@ -7,6 +7,7 @@ import (
 
 	"github.com/David-Ykz/synapse/client"
 	"github.com/David-Ykz/synapse/common"
+	"github.com/David-Ykz/synapse/model"
 )
 
 var (
@@ -29,11 +30,10 @@ var (
 	}
 )
 
-func callLLM(input []byte) ([]byte, error) {
-	return input, nil
-}
-
 func main() {
+	// temporary hard limit
+	modelCap := 5
+
 	brokerHost := os.Getenv("BROKER_HOST")
 	if brokerHost != "" {
 		consumerConfig.Host = brokerHost
@@ -46,6 +46,14 @@ func main() {
 	}
 	consumerConfig.Namespace = os.Getenv("CONSUMER_NAMESPACE")
 	producerConfig.Namespace = os.Getenv("PRODUCER_NAMESPACE")
+
+	modelName := os.Getenv("MODEL_NAME")
+	if modelName == "" {
+		modelName = "gemini-2.5-flash"
+	}
+
+	// initialize llm
+	geminiClient := model.NewGeminiClient(modelName)
 
 	// initialize consumer
 	consumer := client.NewConsumer(consumerConfig)
@@ -74,16 +82,17 @@ func main() {
 				log.Printf("Error receiving event: %v", event.Error)
 				continue
 			}
-
-			result, err := callLLM(event.Payload)
-			log.Printf("Result: %s\n", result)
-			if err != nil {
-				log.Printf("Error calling model: %v", err)
-				continue
+			if modelCap > 0 {
+				result, err := geminiClient.Query(string(event.Payload))
+				log.Printf("Result: %s\n", result)
+				if err != nil {
+					log.Printf("Error calling model: %v", err)
+					continue
+				}
+				producer.Produce([]byte(result))
+				log.Println("Result written back to producer")
+				modelCap -= 1
 			}
-
-			producer.Produce(result)
-			log.Println("Result written back to producer")
 		}
 	}
 }
