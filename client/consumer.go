@@ -1,12 +1,11 @@
-package client
+package synapse
 
 import (
 	"context"
 	"fmt"
 	"net"
+	common "synapse/common"
 	"time"
-
-	"github.com/David-Ykz/synapse/common"
 )
 
 type ConsumerConfig struct {

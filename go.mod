@@ -1,4 +1,4 @@
-module github.com/David-Ykz/synapse
+module synapse
 
 go 1.25.6
 

@@ -1,13 +1,14 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"strconv"
 
-	"github.com/David-Ykz/synapse/client"
-	"github.com/David-Ykz/synapse/common"
-	"github.com/David-Ykz/synapse/model"
+	client "synapse/client"
+	common "synapse/common"
+	models "synapse/models"
 )
 
 var (
@@ -53,7 +54,8 @@ func main() {
 	}
 
 	// initialize llm
-	geminiClient := model.NewGeminiClient(modelName)
+	ctx := context.Background()
+	geminiClient := models.NewGeminiClient(ctx, modelName)
 
 	// initialize consumer
 	consumer := client.NewConsumer(consumerConfig)
@@ -83,7 +85,7 @@ func main() {
 				continue
 			}
 			if modelCap > 0 {
-				result, err := geminiClient.Query(string(event.Payload))
+				result, err := geminiClient.Query(ctx, string(event.Payload))
 				log.Printf("Result: %s\n", result)
 				if err != nil {
 					log.Printf("Error calling model: %v", err)

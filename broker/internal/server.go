@@ -1,10 +1,10 @@
-package broker
+package synapse
 
 import (
 	"fmt"
 	"net"
 
-	"github.com/David-Ykz/synapse/common"
+	common "synapse/common"
 )
 
 type Server struct {
