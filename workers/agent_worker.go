@@ -86,14 +86,14 @@ func main() {
 			}
 			if modelCap > 0 {
 				result, err := geminiClient.Query(ctx, string(event.Payload))
+				modelCap -= 1
 				log.Printf("Result: %s\n", result)
 				if err != nil {
-					log.Printf("Error calling model: %v", err)
+					log.Printf("Error calling model: %w", err)
 					continue
 				}
 				producer.Produce([]byte(result))
 				log.Println("Result written back to producer")
-				modelCap -= 1
 			}
 		}
 	}

@@ -4,7 +4,7 @@ models:
     temperature: 0.5
 tools:
   fetch_hotels:
-   z endpoint: "./fetch_hotels"
+    endpoint: "./fetch_hotels"
   fetch_flights:
     endpoint: "./fetch_flights
 agents:
