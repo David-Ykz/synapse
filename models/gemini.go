@@ -1,10 +1,12 @@
 package models
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 
@@ -12,9 +14,10 @@ import (
 )
 
 type GeminiClient struct {
-	client    *genai.Client
-	modelName string
-	functions []*genai.FunctionDeclaration
+	client             *genai.Client
+	modelName          string
+	functions          []*genai.FunctionDeclaration
+	functionHandlerUrl string
 }
 
 func NewGeminiClient(ctx context.Context, modelName string) *GeminiClient {
@@ -58,13 +61,37 @@ func (g *GeminiClient) LoadTools(dirPath string) {
 	}
 }
 
+func (g *GeminiClient) HandleFunctionCall(ctx context.Context, function *genai.FunctionCall) (any, error) {
+	jsonBody, err := json.Marshal(function.Args)
+	if err != nil {
+		return nil, err
+	}
+
+	url := g.functionHandlerUrl + "/" + function.Name
+
+	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 func (g *GeminiClient) Query(ctx context.Context, prompt string) (string, error) {
 	config := &genai.GenerateContentConfig{
 		Tools: []*genai.Tool{
 			{FunctionDeclarations: g.functions},
 		},
 	}
-	log.Printf("Config: %v\n", config)
 
 	response, err := g.client.Models.GenerateContent(ctx, g.modelName, genai.Text(prompt), config)
 	if err != nil {
@@ -75,7 +102,12 @@ func (g *GeminiClient) Query(ctx context.Context, prompt string) (string, error)
 	for _, part := range response.Candidates[0].Content.Parts {
 		if part.FunctionCall != nil {
 			function := part.FunctionCall
-			return fmt.Sprintf("Function call: %s(args: %v)", function.Name, function.Args), nil
+			result, err := g.HandleFunctionCall(ctx, function)
+			if err != nil {
+				return "", err
+			}
+			resultBytes, err := json.Marshal(result)
+			return string(resultBytes), err
 		}
 
 		if part.Text != "" {
