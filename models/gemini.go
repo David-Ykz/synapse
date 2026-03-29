@@ -47,6 +47,12 @@ func (g *GeminiClient) LoadTools(dirPath string) {
 	files, _ := os.ReadDir(dirPath)
 
 	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		if filepath.Ext(file.Name()) != ".json" {
+			continue
+		}
 		fullPath := filepath.Join(dirPath, file.Name())
 		g.LoadTool(fullPath)
 	}
