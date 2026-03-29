@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"google.golang.org/genai"
 )
@@ -42,12 +43,22 @@ func (g *GeminiClient) LoadTool(filepath string) {
 	g.functions = append(g.functions, &function)
 }
 
+func (g *GeminiClient) LoadTools(dirPath string) {
+	files, _ := os.ReadDir(dirPath)
+
+	for _, file := range files {
+		fullPath := filepath.Join(dirPath, file.Name())
+		g.LoadTool(fullPath)
+	}
+}
+
 func (g *GeminiClient) Query(ctx context.Context, prompt string) (string, error) {
 	config := &genai.GenerateContentConfig{
 		Tools: []*genai.Tool{
 			{FunctionDeclarations: g.functions},
 		},
 	}
+	log.Printf("Config: %v\n", config)
 
 	response, err := g.client.Models.GenerateContent(ctx, g.modelName, genai.Text(prompt), config)
 	if err != nil {

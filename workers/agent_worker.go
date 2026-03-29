@@ -56,6 +56,10 @@ func main() {
 	// initialize llm
 	ctx := context.Background()
 	geminiClient := models.NewGeminiClient(ctx, modelName)
+	toolConfigDir, ok := os.LookupEnv("TOOL_CONFIG_DIR")
+	if ok {
+		geminiClient.LoadTools(toolConfigDir)
+	}
 
 	// initialize consumer
 	consumer := client.NewConsumer(consumerConfig)
