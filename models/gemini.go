@@ -20,15 +20,16 @@ type GeminiClient struct {
 	functionHandlerUrl string
 }
 
-func NewGeminiClient(ctx context.Context, modelName string) *GeminiClient {
+func NewGeminiClient(ctx context.Context, modelName string, handlerUrl string) *GeminiClient {
 	client, err := genai.NewClient(ctx, nil)
 	if err != nil {
 		log.Fatalf("Failed to initialize Gemini client: %w", err)
 	}
 	return &GeminiClient{
-		client:    client,
-		modelName: modelName,
-		functions: []*genai.FunctionDeclaration{},
+		client:             client,
+		modelName:          modelName,
+		functionHandlerUrl: handlerUrl,
+		functions:          []*genai.FunctionDeclaration{},
 	}
 }
 

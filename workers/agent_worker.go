@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -52,10 +53,13 @@ func main() {
 	if modelName == "" {
 		modelName = "gemini-2.5-flash"
 	}
+	handlerEndpoint := os.Getenv("HANDLER_URL")
+	handlerPort := os.Getenv("HANDLER_PORT")
+	handlerUrl := fmt.Sprintf("http://%s:%s", handlerEndpoint, handlerPort)
 
 	// initialize llm
 	ctx := context.Background()
-	geminiClient := models.NewGeminiClient(ctx, modelName)
+	geminiClient := models.NewGeminiClient(ctx, modelName, handlerUrl)
 	toolConfigDir, ok := os.LookupEnv("TOOL_CONFIG_DIR")
 	if ok {
 		geminiClient.LoadTools(toolConfigDir)
