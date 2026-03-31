@@ -5,7 +5,7 @@ import (
 	"os"
 	"strconv"
 
-	broker "github.com/David-Ykz/synapse/broker/internal"
+	broker "synapse/broker/internal"
 )
 
 const (

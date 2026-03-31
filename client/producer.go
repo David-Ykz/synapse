@@ -1,11 +1,11 @@
-package client
+package synapse
 
 import (
 	"context"
 	"fmt"
 	"net"
 
-	"github.com/David-Ykz/synapse/common"
+	common "synapse/common"
 )
 
 type Producer struct {
