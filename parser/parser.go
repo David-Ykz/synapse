@@ -130,7 +130,7 @@ func main() {
 	agentWorkerTemplate := template.Must(template.New("agent").Funcs(funcMap).Parse(string(agentWorkerBaseTemplate)))
 	handlerTemplate := template.Must(template.New("handler").Funcs(funcMap).Parse(string(handlerBaseTemplate)))
 
-	os.MkdirAll(generatedManifestsDir+"/generated", 0755)
+	os.MkdirAll(generatedManifestsDir, 0755)
 
 	for agentName, agentConfig := range config.Agents {
 		fmt.Printf("Processing agent: %s\n", agentName)

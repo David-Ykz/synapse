@@ -3,7 +3,9 @@ package synapse
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
+	"time"
 
 	common "synapse/common"
 )
@@ -27,7 +29,15 @@ func NewProducer(config common.Config) *Producer {
 /* Connects to the broker */
 func (p *Producer) Connect() error {
 	addr := net.JoinHostPort(p.Host, fmt.Sprintf("%d", p.Port))
-	conn, err := net.Dial("tcp", addr)
+	var conn net.Conn
+	var err error
+	for i := 0; i < common.MAX_RETRIES; i++ {
+		conn, err = net.Dial("tcp", addr)
+		if err == nil {
+			break
+		}
+		time.Sleep(common.RETRY_INTERVAL_INITIALIZATION * time.Second)
+	}
 	if err != nil {
 		return fmt.Errorf("Producer.Connect() failed to connect to broker at address %s: %w", addr, err)
 	}
@@ -36,7 +46,17 @@ func (p *Producer) Connect() error {
 	// start up background worker to write events in the channel
 	go func() {
 		for payload := range p.producerChannel {
-			common.WritePacket(p.connection, common.PRODUCER_MESSAGE, p.Namespace, payload)
+			var err error
+			for i := 0; i < common.MAX_RETRIES; i++ {
+				err = common.WritePacket(p.connection, common.PRODUCER_MESSAGE, p.Namespace, payload)
+				if err == nil {
+					break
+				}
+				time.Sleep(common.RETRY_INTERVAL_RUNTIME * time.Second)
+			}
+			if err != nil {
+				log.Printf("Producer.Connect() failed to send message to broker at namespace %s: %s\n", p.Namespace, err)
+			}
 		}
 	}()
 

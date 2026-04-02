@@ -37,7 +37,15 @@ func NewConsumer(config ConsumerConfig) *Consumer {
 /* Connects to the broker */
 func (c *Consumer) Connect() error {
 	addr := net.JoinHostPort(c.Host, fmt.Sprintf("%d", c.Port))
-	conn, err := net.Dial("tcp", addr)
+	var conn net.Conn
+	var err error
+	for i := 0; i < common.MAX_RETRIES; i++ {
+		conn, err = net.Dial("tcp", addr)
+		if err == nil {
+			break
+		}
+		time.Sleep(common.RETRY_INTERVAL_INITIALIZATION * time.Second)
+	}
 	if err != nil {
 		return fmt.Errorf("Consumer.Connect() failed to connect to broker at address %s: %w", addr, err)
 	}
@@ -67,7 +75,14 @@ func (c *Consumer) Subscribe() <-chan Event {
 				return
 			default:
 				// send consumer request
-				err := common.WritePacket(c.connection, common.CONSUMER_MESSAGE, c.Namespace, []byte(""))
+				var err error
+				for i := 0; i < common.MAX_RETRIES; i++ {
+					err = common.WritePacket(c.connection, common.CONSUMER_MESSAGE, c.Namespace, []byte(""))
+					if err == nil {
+						break
+					}
+					time.Sleep(common.RETRY_INTERVAL_RUNTIME * time.Second)
+				}
 				if err != nil {
 					output <- Event{Error: err}
 					return

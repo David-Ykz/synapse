@@ -45,6 +45,12 @@ type Config struct {
 	ChannelSize int
 }
 
+const (
+	MAX_RETRIES                   = 3 // includes initial attempt
+	RETRY_INTERVAL_INITIALIZATION = 5 // seconds
+	RETRY_INTERVAL_RUNTIME        = 5 // seconds
+)
+
 func ReadPacket(conn net.Conn) (packetType PacketType, namespace string, payload []byte, err error) {
 	header := make([]byte, 8)
 	_, err = io.ReadFull(conn, header)
