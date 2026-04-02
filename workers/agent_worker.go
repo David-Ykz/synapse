@@ -9,7 +9,7 @@ import (
 
 	client "synapse/client"
 	common "synapse/common"
-	models "synapse/models"
+	models "synapse/workers/models"
 )
 
 var (

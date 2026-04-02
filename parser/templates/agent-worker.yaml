@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .AgentName }}-config
+data:
+{{- range $filename, $content := .Configs }}
+  {{ $filename }}: |
+{{ $content | indent 2 }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .AgentName }}-worker
+  labels:
+    app: {{ .AgentName }}-worker
+spec:
+  replicas: {{ .NumReplicas }}
+  selector:
+    matchLabels:
+      app: {{ .AgentName }}-worker
+  template:
+    metadata:
+      labels:
+        app: {{ .AgentName }}-worker
+    spec:
+      containers:
+      - name: agent-worker
+        image: synapse-agent-worker:latest 
+        imagePullPolicy: Never
+        env:
+        - name: CONSUMER_NAMESPACE
+          value: "{{ .InputNamespace }}"
+        - name: PRODUCER_NAMESPACE
+          value: "{{ .OutputNamespace }}"
+        - name: LLM_MODEL_NAME
+          value: "{{ .ModelName }}"
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: llm-api-key
+              key: GEMINI_API_KEY
+        - name: TOOL_CONFIG_DIR
+          value: "{{ .ToolConfigDir }}"
+        - name: HANDLER_URL
+          value: "{{ .HandlerUrl }}"
+        volumeMounts:
+        - name: tool-config-volume
+          mountPath: {{ .ToolConfigDir }}
+      volumes:
+      - name: tool-config-volume
+        configMap:
+          name: {{ .AgentName }}-config
