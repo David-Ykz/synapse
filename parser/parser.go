@@ -23,8 +23,8 @@ type ModelConfig struct {
 type AgentConfig struct {
 	InputNamespace  string `yaml:"input_namespace"`
 	OutputNamespace string `yaml:"output_namespace"`
+	NumReplicas     int    `yaml:"replicas"`
 	Model           string `yaml:"model"`
-	ToolsDir        string `yaml:"tools_dir"`
 	HandlerUrl      string `yaml:"handler_url"`
 }
 
@@ -159,7 +159,7 @@ func main() {
 
 		agentData := AgentTemplateData{
 			AgentName:       strings.ReplaceAll(agentName, "_", "-"),
-			NumReplicas:     1,
+			NumReplicas:     agentConfig.NumReplicas,
 			InputNamespace:  agentConfig.InputNamespace,
 			OutputNamespace: agentConfig.OutputNamespace,
 			ModelName:       actualModelName,
