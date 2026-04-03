@@ -17,27 +17,6 @@ const (
 	SERVER_MESSAGE
 )
 
-type TaskStatus byte
-
-const (
-	CREATED TaskStatus = iota
-	CONSUMED
-	COMPLETED
-	CONSTRAINT_VIOLATION
-	ERROR
-)
-
-type Task struct {
-	TaskId             string      `json:"task_id"`
-	RequestId          string      `json:"request_id"`
-	Namespace          string      `json:"namespace"`
-	Status             TaskStatus  `json:"task_status"`
-	Prompt             []byte      `json:"prompt"`
-	Response           interface{} `json:"response"`
-	CreatedTimestamp   int64       `json:"created_timestamp"`
-	CompletedTimestamp int64       `json:"completed_timestamp"`
-}
-
 type Config struct {
 	Host        string
 	Port        int
@@ -49,7 +28,7 @@ func ReadPacket(conn net.Conn) (packetType PacketType, namespace string, payload
 	header := make([]byte, 8)
 	_, err = io.ReadFull(conn, header)
 	if err != nil {
-		err = fmt.Errorf("ReadPacket() failed to read header: %w", err)
+		err = fmt.Errorf("failed to read header: %w", err)
 		return
 	}
 	packetType = PacketType(header[2])
@@ -59,7 +38,7 @@ func ReadPacket(conn net.Conn) (packetType PacketType, namespace string, payload
 	namespaceBuffer := make([]byte, namespaceLength)
 	_, err = io.ReadFull(conn, namespaceBuffer)
 	if err != nil {
-		err = fmt.Errorf("ReadPacket() failed to read namespace: %w", err)
+		err = fmt.Errorf("failed to read namespace: %w", err)
 		return
 	}
 	namespace = string(namespaceBuffer)
@@ -70,7 +49,7 @@ func ReadPacket(conn net.Conn) (packetType PacketType, namespace string, payload
 	payload = make([]byte, payloadLength)
 	_, err = io.ReadFull(conn, payload)
 	if err != nil {
-		err = fmt.Errorf("ReadPacket() failed to read payload: %w", err)
+		err = fmt.Errorf("failed to read payload: %w", err)
 	}
 
 	return
@@ -84,17 +63,17 @@ func WritePacket(conn net.Conn, packetType PacketType, namespace string, payload
 
 	_, err := conn.Write(header)
 	if err != nil {
-		return fmt.Errorf("WritePacket() failed to write header: %w", err)
+		return fmt.Errorf("failed to write header: %w", err)
 	}
 
 	_, err = conn.Write([]byte(namespace))
 	if err != nil {
-		return fmt.Errorf("WritePacket() failed to write: %w", err)
+		return fmt.Errorf("failed to write namespace: %w", err)
 	}
 
 	_, err = conn.Write(payload)
 	if err != nil {
-		return fmt.Errorf("WritePacket() failed to write payload: %w", err)
+		return fmt.Errorf("failed to write payload: %w", err)
 	}
 
 	return nil

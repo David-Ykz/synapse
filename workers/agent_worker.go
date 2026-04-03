@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 
 	client "synapse/client"
 	common "synapse/common"
 	models "synapse/workers/models"
+
+	"go.uber.org/zap"
 )
 
 var (
@@ -35,6 +36,8 @@ var (
 func main() {
 	// temporary hard limit
 	modelCap := 5
+	logger, _ := zap.NewDevelopment()
+	defer logger.Sync()
 
 	brokerHost := os.Getenv("BROKER_HOST")
 	if brokerHost != "" {
@@ -67,15 +70,16 @@ func main() {
 
 	// initialize consumer
 	consumer := client.NewConsumer(consumerConfig)
-	if err := consumer.Connect(); err != nil {
-		log.Fatalf("Failed to connect consumer: %v", err)
+	err := consumer.Connect()
+	if err != nil {
+		logger.Fatal("consumer failed to connect to broker", zap.Error(err))
 	}
 	defer consumer.Disconnect()
 
 	// initialize producer
 	producer := client.NewProducer(producerConfig)
 	if err := producer.Connect(); err != nil {
-		log.Fatalf("Failed to connect producer: %v", err)
+		logger.Fatal("producer failed to connect to broker", zap.Error(err))
 	}
 	defer producer.Disconnect()
 
@@ -85,23 +89,23 @@ func main() {
 		select {
 		case event, ok := <-events:
 			if !ok {
-				log.Println("Event channel closed")
+				logger.Info("event channel closed, terminating")
 				return
 			}
 			if event.Error != nil {
-				log.Printf("Error receiving event: %v", event.Error)
+				logger.Warn("error receiving event", zap.Error(event.Error))
 				continue
 			}
 			if modelCap > 0 {
 				result, err := geminiClient.Query(ctx, string(event.Payload))
 				modelCap -= 1
-				log.Printf("Result: %s\n", result)
+				logger.Info("query result", zap.String("result", result))
 				if err != nil {
-					log.Printf("Error calling model: %w", err)
+					logger.Error("error calling model", zap.Error(err))
 					continue
 				}
 				producer.Produce([]byte(result))
-				log.Println("Result written back to producer")
+				logger.Info("result written back to producer")
 			}
 		}
 	}

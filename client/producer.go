@@ -29,7 +29,7 @@ func (p *Producer) Connect() error {
 	addr := net.JoinHostPort(p.Host, fmt.Sprintf("%d", p.Port))
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("Producer.Connect() failed to connect to broker at address %s: %w", addr, err)
+		return fmt.Errorf("failed to connect to broker at address %s: %w", addr, err)
 	}
 	p.connection = conn
 
@@ -47,7 +47,7 @@ func (p *Producer) Connect() error {
 func (p *Producer) Disconnect() error {
 	err := common.WritePacket(p.connection, common.DISCONNECT, p.Namespace, []byte(""))
 	if err != nil {
-		return fmt.Errorf("Producer.Disconnect() failed to send message to broker at namespace %s: %w", p.Namespace, err)
+		return fmt.Errorf("failed to send message to broker at namespace %s: %w", p.Namespace, err)
 	}
 	p.connection.Close()
 	return nil
