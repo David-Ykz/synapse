@@ -33,14 +33,14 @@ func exists(filename string) bool {
 func write(filename string, bufferSize int, data []byte) error {
 	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("write() failed to open file: %w", err)
+		return fmt.Errorf("failed to open file: %w", err)
 	}
 	defer f.Close()
 
 	writer := bufio.NewWriterSize(f, bufferSize)
 	_, err = writer.Write(data)
 	if err != nil {
-		return fmt.Errorf("write() failed to write data to file: %w", err)
+		return fmt.Errorf("failed to write data to file: %w", err)
 	}
 	return writer.Flush()
 }
@@ -48,13 +48,13 @@ func write(filename string, bufferSize int, data []byte) error {
 func writeInt64(filename string, val int64) error {
 	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("writeInt64() failed to open file: %w", err)
+		return fmt.Errorf("failed to open file: %w", err)
 	}
 	defer f.Close()
 
 	err = binary.Write(f, binary.LittleEndian, val)
 	if err != nil {
-		return fmt.Errorf("writeInt64() failed to write data to file: %w", err)
+		return fmt.Errorf("failed to write data to file: %w", err)
 	}
 	return nil
 }
@@ -62,7 +62,7 @@ func writeInt64(filename string, val int64) error {
 func read(filename string, startOffset int64, endOffset int64) ([]byte, error) {
 	f, err := os.Open(filename)
 	if err != nil {
-		return nil, fmt.Errorf("read() failed to open file: %w", err)
+		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
 	defer f.Close()
 
@@ -70,20 +70,20 @@ func read(filename string, startOffset int64, endOffset int64) ([]byte, error) {
 	if endOffset == 0 {
 		info, err := f.Stat()
 		if err != nil {
-			return nil, fmt.Errorf("read() failed to get file size: %w", err)
+			return nil, fmt.Errorf("failed to get file size: %w", err)
 		}
 		endOffset = info.Size()
 	}
 
 	if endOffset <= startOffset {
-		return nil, fmt.Errorf("read() endOffset (%d) must be greater than startOffset (%d)", endOffset, startOffset)
+		return nil, fmt.Errorf("endOffset (%d) must be greater than startOffset (%d)", endOffset, startOffset)
 	}
 
 	length := endOffset - startOffset
 	data := make([]byte, length)
 	_, err = f.ReadAt(data, startOffset)
 	if err != nil {
-		return nil, fmt.Errorf("read() failed to read data: %w", err)
+		return nil, fmt.Errorf("failed to read data: %w", err)
 	}
 
 	return data, nil
@@ -112,7 +112,7 @@ func (b *Broker) Initialize() error {
 	// create directories if they don't exist
 	err := os.MkdirAll(basePath, 0755)
 	if err != nil {
-		return fmt.Errorf("Broker.Initialize() failed to create required directories for path %s: %w", basePath, err)
+		return fmt.Errorf("failed to create required directories for path %s: %w", basePath, err)
 	}
 
 	// load offsetReadIndex
@@ -120,13 +120,13 @@ func (b *Broker) Initialize() error {
 	if exists(indexFilepath) {
 		f, err := os.OpenFile(indexFilepath, os.O_RDWR, 0644)
 		if err != nil {
-			return fmt.Errorf("Broker.Initialize() failed to open index file %s: %w", indexFilepath, err)
+			return fmt.Errorf("failed to open index file %s: %w", indexFilepath, err)
 		}
 		defer f.Close()
 		_, _ = f.Seek(-8, io.SeekEnd)
 		err = binary.Read(f, binary.LittleEndian, &b.offsetReadIndex)
 		if err != nil {
-			return fmt.Errorf("Broker.Initialize() failed to read index file %s: %w", indexFilepath, err)
+			return fmt.Errorf("failed to read index file %s: %w", indexFilepath, err)
 		}
 		f.Truncate(0)
 	}
@@ -136,7 +136,7 @@ func (b *Broker) Initialize() error {
 	if exists(offsetFilepath) {
 		f, err := os.Open(offsetFilepath)
 		if err != nil {
-			return fmt.Errorf("Broker.Initialize() failed to open offset file %s: %w", offsetFilepath, err)
+			return fmt.Errorf("failed to open offset file %s: %w", offsetFilepath, err)
 		}
 		defer f.Close()
 
@@ -155,7 +155,7 @@ func (b *Broker) Initialize() error {
 			index := modulo(numRecords-i+1, OFFSET_BUFFER_MAX_SIZE)
 			err = binary.Read(f, binary.LittleEndian, &b.offsets[index])
 			if err != nil {
-				return fmt.Errorf("Broker.Initialize() failed to read offset file %s: %w", offsetFilepath, err)
+				return fmt.Errorf("failed to read offset file %s: %w", offsetFilepath, err)
 			}
 		}
 	}
@@ -170,7 +170,7 @@ func (b *Broker) Write(data []byte) error {
 	dataFilepath := b.fullFilepath(DATA_FILE_NAME)
 	err := write(dataFilepath, b.writeBufferSize, data)
 	if err != nil {
-		return fmt.Errorf("Broker.Write() failed to write to data file %s: %w", dataFilepath, err)
+		return fmt.Errorf("failed to write to data file %s: %w", dataFilepath, err)
 	}
 	// get previous offset
 	prevOffset := b.offsets[b.offsetWriteIndex%OFFSET_BUFFER_MAX_SIZE]
@@ -182,7 +182,7 @@ func (b *Broker) Write(data []byte) error {
 	offsetFilepath := b.fullFilepath(OFFSET_FILE_NAME)
 	err = writeInt64(offsetFilepath, newOffset)
 	if err != nil {
-		return fmt.Errorf("Broker.Write() failed to write to offset file %s: %w", offsetFilepath, err)
+		return fmt.Errorf("failed to write to offset file %s: %w", offsetFilepath, err)
 	}
 	return nil
 }
@@ -199,7 +199,7 @@ func (b *Broker) ReadOne() ([]byte, error) {
 	dataFilepath := b.fullFilepath(DATA_FILE_NAME)
 	data, err := read(dataFilepath, startOffset, endOffset)
 	if err != nil {
-		return nil, fmt.Errorf("Broker.ReadOne() failed from data file %s at offset %d - %d: %w", dataFilepath, startOffset, endOffset, err)
+		return nil, fmt.Errorf("failed from data file %s at offset %d - %d: %w", dataFilepath, startOffset, endOffset, err)
 	}
 	// increment index
 	b.offsetReadIndex++
@@ -207,7 +207,7 @@ func (b *Broker) ReadOne() ([]byte, error) {
 	indexFilepath := b.fullFilepath(INDEX_FILE_NAME)
 	err = writeInt64(indexFilepath, b.offsetReadIndex)
 	if err != nil {
-		return nil, fmt.Errorf("Broker.ReadOne() failed to write to index file %s: %w", indexFilepath, err)
+		return nil, fmt.Errorf("failed to write to index file %s: %w", indexFilepath, err)
 	}
 	return data, nil
 }

@@ -1,11 +1,12 @@
 package main
 
 import (
-	"log"
 	"os"
 	"strconv"
 
 	broker "synapse/broker/internal"
+
+	"go.uber.org/zap"
 )
 
 const (
@@ -19,27 +20,29 @@ const (
 	MISSING_ENV_MESSAGE = "%s not found, defaulting to %s"
 )
 
+func getEnvOrDefault(key, defaultValue string, logger *zap.Logger) string {
+	value, exists := os.LookupEnv(key)
+	if !exists {
+		logger.Warn("environment value not found, using default value instead",
+			zap.String("key", key),
+			zap.String("default", defaultValue),
+		)
+		return defaultValue
+	}
+	return value
+}
+
 func main() {
-	portStr, ok := os.LookupEnv(BROKER_PORT)
-	if !ok {
-		log.Printf(MISSING_ENV_MESSAGE, BROKER_PORT, DEFAULT_PORT)
-	}
-	filePath, ok := os.LookupEnv(BROKER_FILEPATH)
-	if !ok {
-		log.Printf(MISSING_ENV_MESSAGE, BROKER_FILEPATH, DEFAULT_FILEPATH)
-	}
-	bufferStr, ok := os.LookupEnv(BROKER_BUFFER_SIZE)
-	if !ok {
-		log.Printf(MISSING_ENV_MESSAGE, BROKER_BUFFER_SIZE, DEFAULT_BUFFER_SIZE)
-	}
+	logger, _ := zap.NewDevelopment()
+	defer logger.Sync()
 
-	port, _ := strconv.Atoi(portStr)
-	bufferSize, _ := strconv.Atoi(bufferStr)
+	port, _ := strconv.Atoi(getEnvOrDefault(BROKER_PORT, DEFAULT_PORT, logger))
+	bufferSize, _ := strconv.Atoi(getEnvOrDefault(BROKER_BUFFER_SIZE, DEFAULT_BUFFER_SIZE, logger))
+	filePath := getEnvOrDefault(BROKER_FILEPATH, DEFAULT_FILEPATH, logger)
 
-	server := broker.NewServer(port, filePath, bufferSize)
-	log.Printf("Starting broker on :%d", port)
+	server := broker.NewServer(port, filePath, bufferSize, logger)
 	err := server.Start()
 	if err != nil {
-		log.Fatalf("Failed to start server: %w", err)
+		logger.Error("failed to start server", zap.Error(err))
 	}
 }

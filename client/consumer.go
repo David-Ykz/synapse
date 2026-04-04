@@ -39,7 +39,7 @@ func (c *Consumer) Connect() error {
 	addr := net.JoinHostPort(c.Host, fmt.Sprintf("%d", c.Port))
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("Consumer.Connect() failed to connect to broker at address %s: %w", addr, err)
+		return fmt.Errorf("failed to connect to broker at address %s: %w", addr, err)
 	}
 	c.connection = conn
 	return nil
@@ -49,7 +49,7 @@ func (c *Consumer) Connect() error {
 func (c *Consumer) Disconnect() error {
 	err := common.WritePacket(c.connection, common.DISCONNECT, c.Namespace, []byte(""))
 	if err != nil {
-		return fmt.Errorf("Consumer.Disconnect() failed to send message to broker at namespace %s: %w", c.Namespace, err)
+		return fmt.Errorf("failed to send message to broker at namespace %s: %w", c.Namespace, err)
 	}
 	c.connection.Close()
 	return nil
