@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: synapse-broker-headless
+spec:
+  clusterIP: None
+  selector:
+    app: broker
+  ports:
+    - name: raft
+      port: 8081
+      targetPort: 8081
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: synapse-broker-client
+spec:
+  selector:
+    app: broker
+  ports:
+    - name: client
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: synapse-broker
+spec:
+  serviceName: "synapse-broker-headless"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: broker
+  template:
+    metadata:
+      labels:
+        app: broker
+    spec:
+      containers:
+      - name: broker
+        image: synapse-broker:latest
+        imagePullPolicy: Never
+        env:
+        - name: BROKER_PORT
+          value: "8080"
+        - name: BROKER_FILEPATH
+          value: "/data"
+        - name: RAFT_PORT
+          value: "8081"
+        - name: REPLICAS
+          value: "3"
+        - name: STATEFULSET_NAME
+          value: "synapse-broker"
+        - name: HEADLESS_SVC
+          value: "synapse-broker-headless.default.svc.cluster.local"
+        - name: NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        ports:
+        - containerPort: 8080
+          name: client
+        - containerPort: 8081
+          name: raft
+        volumeMounts:
+        - name: data
+          mountPath: /data
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 128Mi

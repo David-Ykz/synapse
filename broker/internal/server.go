@@ -1,11 +1,18 @@
 package synapse
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
 
 	common "synapse/common"
 
+	"github.com/hashicorp/raft"
+	raftboltdb "github.com/hashicorp/raft-boltdb"
 	"go.uber.org/zap"
 )
 
@@ -15,6 +22,8 @@ type Server struct {
 	brokerFilepath        string
 	brokerWriteBufferSize int
 	logger                *zap.Logger
+	mutex                 sync.Mutex
+	raftNode              *raft.Raft
 }
 
 func NewServer(port int, filepath string, bufferSize int, log *zap.Logger) *Server {
@@ -27,6 +36,81 @@ func NewServer(port int, filepath string, bufferSize int, log *zap.Logger) *Serv
 	}
 }
 
+func (s *Server) getOrCreateBroker(namespace string) *Broker {
+	s.mutex.Lock()
+	defer s.mutex.Lock()
+	broker, exists := s.Brokers[namespace]
+	if !exists {
+		broker = NewBroker(0, namespace, s.brokerFilepath, s.brokerWriteBufferSize)
+		broker.Initialize()
+		s.Brokers[namespace] = broker
+	}
+	return broker
+}
+
+func (s *Server) SetupRaft(serverID, advertiseAddr, bindAddr string, bootstrapPeers map[string]string) error {
+	raftConfig := raft.DefaultConfig()
+	raftConfig.LocalID = raft.ServerID(serverID)
+
+	raftDir := filepath.Join(s.brokerFilepath, "raft")
+	os.MkdirAll(raftDir, 0755)
+
+	// setup Raft stores
+	logStore, err := raftboltdb.NewBoltStore(filepath.Join(raftDir, "logs.dat"))
+	if err != nil {
+		return err
+	}
+	stableStore, err := raftboltdb.NewBoltStore(filepath.Join(raftDir, "stable.dat"))
+	if err != nil {
+		return err
+	}
+	snapshotStore, err := raft.NewFileSnapshotStore(raftDir, 2, os.Stdout)
+	if err != nil {
+		return err
+	}
+
+	// bind to 0.0.0.0, but advertise the pod's DNS name
+	advAddr, err := net.ResolveTCPAddr("tcp", advertiseAddr)
+	if err != nil {
+		return err
+	}
+
+	transport, err := raft.NewTCPTransport(bindAddr, advAddr, 3, 10*time.Second, os.Stdout)
+	if err != nil {
+		return err
+	}
+
+	fsm := &brokerFSM{server: s}
+	s.raftNode, err = raft.NewRaft(raftConfig, fsm, logStore, stableStore, snapshotStore, transport)
+	if err != nil {
+		return err
+	}
+
+	// bootstrap cluster
+	if len(bootstrapPeers) > 0 {
+		var configuration raft.Configuration
+		for id, addr := range bootstrapPeers {
+			configuration.Servers = append(configuration.Servers, raft.Server{
+				ID:      raft.ServerID(id),
+				Address: raft.ServerAddress(addr),
+			})
+		}
+		s.raftNode.BootstrapCluster(configuration)
+	}
+
+	return nil
+}
+
+func (s *Server) applyRaftCommand(cmd Command) error {
+	b, err := json.Marshal(cmd)
+	if err != nil {
+		return err
+	}
+
+	future := s.raftNode.Apply(b, 5*time.Second)
+	return future.Error()
+}
+
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 	for {
@@ -36,66 +120,41 @@ func (s *Server) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		broker, exists := s.Brokers[namespace]
-		if !exists {
-			s.logger.Info("No broker found, creating broker",
-				zap.String("namespace", namespace),
-				zap.String("filepath", s.brokerFilepath),
-			)
-			broker = NewBroker(0, namespace, s.brokerFilepath, s.brokerWriteBufferSize)
-			err = broker.Initialize()
-			if err != nil {
-				s.logger.Error("failed to initialize broker",
-					zap.Error(err),
-					zap.String("namespace", namespace),
-				)
-				continue
-			}
-			s.Brokers[namespace] = broker
+		if s.raftNode.State() != raft.Leader {
+			s.logger.Warn("Rejecting request, not leader")
+			common.WritePacket(conn, common.SERVER_ERROR, namespace, []byte("ERR_NOT_LEADER"))
+			return
 		}
+
+		broker := s.getOrCreateBroker(namespace)
+
 		switch packetType {
 		case common.DISCONNECT:
-			s.logger.Info("client disconnect",
-				zap.String("namespace", namespace),
-			)
 			return
+
 		case common.PRODUCER_MESSAGE:
-			s.logger.Info("producer message",
-				zap.String("namespace", namespace),
-				zap.ByteString("data", data),
-			)
-			err = broker.Write(data)
+			// apply write via Raft
+			err := s.applyRaftCommand(Command{Type: CmdProduce, Namespace: namespace, Data: data})
 			if err != nil {
-				s.logger.Error("failed to write to broker",
-					zap.String("namespace", namespace),
-					zap.Error(err),
-				)
+				s.logger.Error("failed to replicate write", zap.Error(err))
 			}
+
 		case common.CONSUMER_MESSAGE:
-			s.logger.Info("consumer read request",
-				zap.String("namespace", namespace),
-			)
-			response, err := broker.ReadOne()
-			if err != nil {
-				s.logger.Error("failed to read from broker",
-					zap.String("namespace", namespace),
-					zap.Error(err),
-				)
-				err = common.WritePacket(conn, common.SERVER_ERROR, namespace, []byte(""))
-				if err != nil {
-					s.logger.Error("failed to return server error message",
-						zap.String("namespace", namespace),
-						zap.Error(err),
-					)
-				}
+			response, err := broker.PeekOne()
+			if err != nil || response == nil {
+				common.WritePacket(conn, common.SERVER_ERROR, namespace, []byte("ERR_READ_FAILED_OR_EMPTY"))
 				continue
 			}
+
 			err = common.WritePacket(conn, common.SERVER_MESSAGE, namespace, response)
 			if err != nil {
-				s.logger.Error("failed to return server message",
-					zap.String("namespace", namespace),
-					zap.Error(err),
-				)
+				continue // failed to write to client so don't advance index
+			}
+
+			// replicate the read index advancement across cluster
+			err = s.applyRaftCommand(Command{Type: CmdConsume, Namespace: namespace})
+			if err != nil {
+				s.logger.Error("failed to replicate read advance", zap.Error(err))
 			}
 		}
 	}
