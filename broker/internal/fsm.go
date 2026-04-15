@@ -2,7 +2,8 @@ package synapse
 
 import (
 	"archive/tar"
-	"encoding/json"
+	"encoding/binary"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,17 +12,50 @@ import (
 	"go.uber.org/zap"
 )
 
-type CommandType string
+type CommandType byte
 
 const (
-	CmdProduce CommandType = "produce"
-	CmdConsume CommandType = "consume"
+	CmdProduce CommandType = 0x01
+	CmdConsume CommandType = 0x02
 )
 
 type Command struct {
-	Type      CommandType `json:"type"`
-	Namespace string      `json:"namespace"`
-	Data      []byte      `json:"data,omitempty"`
+	Type      CommandType
+	Namespace string
+	Data      []byte
+}
+
+// encodes a Command into a compact binary format:
+// [1 byte: type] [1 byte: namespace len] [4 bytes: data len] [namespace] [data]
+func (c Command) encode() []byte {
+	nsLen := len(c.Namespace)
+	buf := make([]byte, 6+nsLen+len(c.Data))
+	buf[0] = byte(c.Type)
+	buf[1] = byte(nsLen)
+	binary.BigEndian.PutUint32(buf[2:6], uint32(len(c.Data)))
+	copy(buf[6:], c.Namespace)
+	copy(buf[6+nsLen:], c.Data)
+	return buf
+}
+
+func decodeCommand(b []byte) (Command, error) {
+	if len(b) < 6 {
+		return Command{}, errors.New("raft command too short")
+	}
+	nsLen := int(b[1])
+	dataLen := int(binary.BigEndian.Uint32(b[2:6]))
+	if len(b) < 6+nsLen+dataLen {
+		return Command{}, errors.New("raft command truncated")
+	}
+	var data []byte
+	if dataLen > 0 {
+		data = b[6+nsLen : 6+nsLen+dataLen]
+	}
+	return Command{
+		Type:      CommandType(b[0]),
+		Namespace: string(b[6 : 6+nsLen]),
+		Data:      data,
+	}, nil
 }
 
 type brokerFSM struct {
@@ -29,9 +63,9 @@ type brokerFSM struct {
 }
 
 func (f *brokerFSM) Apply(log *raft.Log) interface{} {
-	var cmd Command
-	if err := json.Unmarshal(log.Data, &cmd); err != nil {
-		f.server.logger.Error("failed to unmarshal raft command", zap.Error(err))
+	cmd, err := decodeCommand(log.Data)
+	if err != nil {
+		f.server.logger.Error("failed to decode raft command", zap.Error(err))
 		return err
 	}
 

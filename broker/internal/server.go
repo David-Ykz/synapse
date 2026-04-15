@@ -1,7 +1,6 @@
 package synapse
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -38,7 +37,7 @@ func NewServer(port int, filepath string, bufferSize int, log *zap.Logger) *Serv
 
 func (s *Server) getOrCreateBroker(namespace string) *Broker {
 	s.mutex.Lock()
-	defer s.mutex.Lock()
+	defer s.mutex.Unlock()
 	broker, exists := s.Brokers[namespace]
 	if !exists {
 		broker = NewBroker(0, namespace, s.brokerFilepath, s.brokerWriteBufferSize)
@@ -69,7 +68,7 @@ func (s *Server) SetupRaft(serverID, advertiseAddr, bindAddr string, bootstrapPe
 		return err
 	}
 
-	// bind to 0.0.0.0, but advertise the pod's DNS name
+	// bind to 0.0.0.0 but advertise the pod's DNS name
 	advAddr, err := net.ResolveTCPAddr("tcp", advertiseAddr)
 	if err != nil {
 		return err
@@ -102,12 +101,7 @@ func (s *Server) SetupRaft(serverID, advertiseAddr, bindAddr string, bootstrapPe
 }
 
 func (s *Server) applyRaftCommand(cmd Command) error {
-	b, err := json.Marshal(cmd)
-	if err != nil {
-		return err
-	}
-
-	future := s.raftNode.Apply(b, 5*time.Second)
+	future := s.raftNode.Apply(cmd.encode(), 5*time.Second)
 	return future.Error()
 }
 
