@@ -186,30 +186,27 @@ func (b *Broker) Write(data []byte) error {
 	}
 	return nil
 }
-
-func (b *Broker) ReadOne() ([]byte, error) {
+func (b *Broker) PeekOne() ([]byte, error) {
 	if b.offsetReadIndex >= b.offsetWriteIndex {
 		return nil, nil
 	}
 
-	startOffset := b.offsets[b.offsetReadIndex]
-	endOffset := b.offsets[b.offsetReadIndex+1]
+	startOffset := b.offsets[b.offsetReadIndex%OFFSET_BUFFER_MAX_SIZE]
+	endOffset := b.offsets[(b.offsetReadIndex+1)%OFFSET_BUFFER_MAX_SIZE]
 
-	// read data
 	dataFilepath := b.fullFilepath(DATA_FILE_NAME)
 	data, err := read(dataFilepath, startOffset, endOffset)
 	if err != nil {
 		return nil, fmt.Errorf("failed from data file %s at offset %d - %d: %w", dataFilepath, startOffset, endOffset, err)
 	}
-	// increment index
-	b.offsetReadIndex++
-	// store index
-	indexFilepath := b.fullFilepath(INDEX_FILE_NAME)
-	err = writeInt64(indexFilepath, b.offsetReadIndex)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write to index file %s: %w", indexFilepath, err)
-	}
 	return data, nil
+}
+
+// used by Raft to commit a read across all nodes
+func (b *Broker) AdvanceReadIndex() error {
+	b.offsetReadIndex++
+	indexFilepath := b.fullFilepath(INDEX_FILE_NAME)
+	return writeInt64(indexFilepath, b.offsetReadIndex)
 }
 
 func (b *Broker) Print() {
