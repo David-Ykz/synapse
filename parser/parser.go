@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,25 @@ type AgentConfig struct {
 	NumReplicas     int    `yaml:"replicas"`
 	Model           string `yaml:"model"`
 	HandlerUrl      string `yaml:"handler_url"`
+	MinReplicas     int    `yaml:"min_replicas"`
+	MaxReplicas     int    `yaml:"max_replicas"`
+	LagPerReplica   int    `yaml:"lag_per_replica"`
+}
+
+type AutoscalerAgentConfig struct {
+	DeploymentName string `json:"deployment_name"`
+	Namespace      string `json:"input_namespace"`
+	MinReplicas    int    `json:"min_replicas"`
+	MaxReplicas    int    `json:"max_replicas"`
+	LagPerReplica  int    `json:"lag_per_replica"`
+}
+
+type AutoscalerTemplateData struct {
+	BrokerMetricsAddr string
+	PollIntervalSec   int
+	CooldownSec       int
+	AgentConfigsJSON  string
+	K8sNamespace      string
 }
 
 type AgentTemplateData struct {
@@ -125,10 +145,16 @@ func main() {
 		fmt.Println("Error reading handler.yaml template:", err)
 		return
 	}
+	autoscalerBaseTemplate, err := os.ReadFile("templates/autoscaler.yaml")
+	if err != nil {
+		fmt.Println("Error reading autoscaler.yaml template:", err)
+		return
+	}
 
 	// parse templates
 	agentWorkerTemplate := template.Must(template.New("agent").Funcs(funcMap).Parse(string(agentWorkerBaseTemplate)))
 	handlerTemplate := template.Must(template.New("handler").Funcs(funcMap).Parse(string(handlerBaseTemplate)))
+	autoscalerTemplate := template.Must(template.New("autoscaler").Funcs(funcMap).Parse(string(autoscalerBaseTemplate)))
 
 	os.MkdirAll(generatedManifestsDir+"/generated", 0755)
 
@@ -157,9 +183,14 @@ func main() {
 			fmt.Printf("Warning: no port found for handler %s, defaulting to %s", agentConfig.HandlerUrl, handlerPort)
 		}
 
+		numReplicas := agentConfig.NumReplicas
+		if agentConfig.MinReplicas > 0 || agentConfig.MaxReplicas > 0 {
+			numReplicas = agentConfig.MinReplicas
+		}
+
 		agentData := AgentTemplateData{
 			AgentName:       strings.ReplaceAll(agentName, "_", "-"),
-			NumReplicas:     agentConfig.NumReplicas,
+			NumReplicas:     numReplicas,
 			InputNamespace:  agentConfig.InputNamespace,
 			OutputNamespace: agentConfig.OutputNamespace,
 			ModelName:       actualModelName,
@@ -176,6 +207,38 @@ func main() {
 		// write templates
 		writeTemplateToFile(agentWorkerTemplate, agentData, fmt.Sprintf("%s/generated/%s-worker.yaml", generatedManifestsDir, agentData.AgentName))
 		writeTemplateToFile(handlerTemplate, handlerData, fmt.Sprintf("%s/generated/%s-handler.yaml", generatedManifestsDir, agentData.AgentName))
+	}
+
+	// collect autoscaling-enabled agents and generate autoscaler manifest
+	var autoscalerAgents []AutoscalerAgentConfig
+	for agentName, agentConfig := range config.Agents {
+		if agentConfig.MinReplicas == 0 && agentConfig.MaxReplicas == 0 {
+			continue
+		}
+		lagPerReplica := agentConfig.LagPerReplica
+		if lagPerReplica == 0 {
+			lagPerReplica = 10
+		}
+		autoscalerAgents = append(autoscalerAgents, AutoscalerAgentConfig{
+			DeploymentName: strings.ReplaceAll(agentName, "_", "-") + "-worker",
+			Namespace:      agentConfig.InputNamespace,
+			MinReplicas:    agentConfig.MinReplicas,
+			MaxReplicas:    agentConfig.MaxReplicas,
+			LagPerReplica:  lagPerReplica,
+		})
+	}
+
+	if len(autoscalerAgents) > 0 {
+		configJSON, _ := json.Marshal(autoscalerAgents)
+		autoscalerData := AutoscalerTemplateData{
+			BrokerMetricsAddr: "synapse-broker-client:8082",
+			PollIntervalSec:   15,
+			CooldownSec:       60,
+			AgentConfigsJSON:  string(configJSON),
+			K8sNamespace:      "default",
+		}
+		writeTemplateToFile(autoscalerTemplate, autoscalerData, fmt.Sprintf("%s/generated/autoscaler.yaml", generatedManifestsDir))
+		fmt.Println("Generated autoscaler manifest")
 	}
 
 	fmt.Printf("Successfully generated deployment manifests in %s/generated\n", generatedManifestsDir)

@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: synapse-autoscaler
+  namespace: {{ .K8sNamespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: synapse-autoscaler-role
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: synapse-autoscaler-rolebinding
+subjects:
+  - kind: ServiceAccount
+    name: synapse-autoscaler
+    namespace: {{ .K8sNamespace }}
+roleRef:
+  kind: ClusterRole
+  name: synapse-autoscaler-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: synapse-autoscaler-config
+  namespace: {{ .K8sNamespace }}
+data:
+  BROKER_METRICS_ADDR: "{{ .BrokerMetricsAddr }}"
+  POLL_INTERVAL_SEC: "{{ .PollIntervalSec }}"
+  COOLDOWN_SEC: "{{ .CooldownSec }}"
+  K8S_NAMESPACE: "{{ .K8sNamespace }}"
+  AGENT_CONFIGS: |
+    {{ .AgentConfigsJSON }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synapse-autoscaler
+  namespace: {{ .K8sNamespace }}
+  labels:
+    app: synapse-autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: synapse-autoscaler
+  template:
+    metadata:
+      labels:
+        app: synapse-autoscaler
+    spec:
+      serviceAccountName: synapse-autoscaler
+      containers:
+      - name: autoscaler
+        image: synapse-autoscaler:latest
+        imagePullPolicy: Never
+        envFrom:
+        - configMapRef:
+            name: synapse-autoscaler-config

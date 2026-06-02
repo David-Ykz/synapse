@@ -15,6 +15,11 @@ import (
 	"go.uber.org/zap"
 )
 
+type LagSnapshot struct {
+	Namespace string `json:"namespace"`
+	Lag       int64  `json:"lag"`
+}
+
 type Server struct {
 	Port                  int
 	Brokers               map[string]*Broker
@@ -98,6 +103,20 @@ func (s *Server) SetupRaft(serverID, advertiseAddr, bindAddr string, bootstrapPe
 	}
 
 	return nil
+}
+
+func (s *Server) GetLagSnapshot() []LagSnapshot {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	out := make([]LagSnapshot, 0, len(s.Brokers))
+	for ns, b := range s.Brokers {
+		lag := b.offsetWriteIndex - b.offsetReadIndex
+		if lag < 0 {
+			lag = 0
+		}
+		out = append(out, LagSnapshot{Namespace: ns, Lag: lag})
+	}
+	return out
 }
 
 func (s *Server) applyRaftCommand(cmd Command) error {
