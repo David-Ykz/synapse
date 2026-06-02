@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 
@@ -33,6 +35,24 @@ func getEnvOrDefault(key, defaultValue string, logger *zap.Logger) string {
 	return value
 }
 
+func startMetricsServer(s *broker.Server, port int, logger *zap.Logger) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/metrics/lag", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		snapshots := s.GetLagSnapshot()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(snapshots)
+	})
+	addr := fmt.Sprintf(":%d", port)
+	logger.Info("started metrics server", zap.String("addr", addr))
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		logger.Fatal("metrics server failed", zap.Error(err))
+	}
+}
+
 func main() {
 	logger, _ := zap.NewDevelopment()
 	defer logger.Sync()
@@ -62,6 +82,8 @@ func main() {
 		peers[peerID] = peerAddr
 	}
 
+	metricsPort, _ := strconv.Atoi(getEnvOrDefault("METRICS_PORT", "8082", logger))
+
 	server := broker.NewServer(port, filePath, bufferSize, logger)
 
 	// initialize Raft with the explicitly separated addresses
@@ -69,6 +91,8 @@ func main() {
 	if err != nil {
 		logger.Fatal("Failed to setup Raft", zap.Error(err))
 	}
+
+	go startMetricsServer(server, metricsPort, logger)
 
 	err = server.Start()
 	if err != nil {
