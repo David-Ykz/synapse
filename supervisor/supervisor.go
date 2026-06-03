@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	client "synapse/client"
-	common "synapse/common"
-	"synapse/state"
+	client "github.com/David-Ykz/synapse/client"
+	common "github.com/David-Ykz/synapse/common"
+	"github.com/David-Ykz/synapse/state"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"

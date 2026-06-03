@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net"
 
-	common "synapse/common"
+	common "github.com/David-Ykz/synapse/common"
 )
 
 type Producer struct {

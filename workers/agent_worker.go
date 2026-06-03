@@ -7,10 +7,10 @@ import (
 	"os"
 	"strconv"
 
-	client "synapse/client"
-	common "synapse/common"
-	"synapse/supervisor"
-	models "synapse/workers/models"
+	client "github.com/David-Ykz/synapse/client"
+	common "github.com/David-Ykz/synapse/common"
+	"github.com/David-Ykz/synapse/supervisor"
+	models "github.com/David-Ykz/synapse/workers/models"
 
 	"go.uber.org/zap"
 )

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	common "synapse/common"
+	common "github.com/David-Ykz/synapse/common"
 
 	"github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb"

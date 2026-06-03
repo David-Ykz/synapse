@@ -7,7 +7,7 @@ import (
 	"os"
 	"strconv"
 
-	broker "synapse/broker/internal"
+	broker "github.com/David-Ykz/synapse/broker/internal"
 
 	"go.uber.org/zap"
 )

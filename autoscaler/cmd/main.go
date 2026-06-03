@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"syscall"
 
-	autoscaler "synapse/autoscaler/internal"
+	autoscaler "github.com/David-Ykz/synapse/autoscaler/internal"
 
 	"go.uber.org/zap"
 )

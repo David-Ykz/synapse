@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
-	common "synapse/common"
+	common "github.com/David-Ykz/synapse/common"
 	"time"
 )
 
