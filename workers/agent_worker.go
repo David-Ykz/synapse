@@ -2,88 +2,74 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
 
 	client "synapse/client"
 	common "synapse/common"
+	"synapse/supervisor"
 	models "synapse/workers/models"
 
 	"go.uber.org/zap"
 )
 
-var (
-	producerConfig = common.Config{
-		Host:        "localhost",
-		Port:        8080,
-		Namespace:   "template-output",
-		ChannelSize: 128,
+func main() {
+	logger, _ := zap.NewDevelopment()
+	defer logger.Sync()
+
+	brokerHost := os.Getenv("BROKER_HOST")
+	if brokerHost == "" {
+		brokerHost = "localhost"
 	}
-	consumerConfig = client.ConsumerConfig{
+	brokerPort := 8080
+	if p := os.Getenv("BROKER_PORT"); p != "" {
+		brokerPort, _ = strconv.Atoi(p)
+	}
+
+	consumerConfig := client.ConsumerConfig{
 		Config: common.Config{
-			Host:        "localhost",
-			Port:        8080,
-			Namespace:   "template-input",
+			Host:        brokerHost,
+			Port:        brokerPort,
+			Namespace:   os.Getenv("CONSUMER_NAMESPACE"),
 			ChannelSize: 128,
 		},
 		PollIntervalMs:    100,
 		PollBackoff:       true,
 		MaxPollIntervalMs: 5000,
 	}
-)
-
-func main() {
-	// temporary hard limit
-	modelCap := 5
-	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
-
-	brokerHost := os.Getenv("BROKER_HOST")
-	if brokerHost != "" {
-		consumerConfig.Host = brokerHost
-		producerConfig.Host = brokerHost
+	producerConfig := common.Config{
+		Host:        brokerHost,
+		Port:        brokerPort,
+		Namespace:   os.Getenv("PRODUCER_NAMESPACE"),
+		ChannelSize: 128,
 	}
-	brokerPort := os.Getenv("BROKER_PORT")
-	if brokerPort != "" {
-		consumerConfig.Port, _ = strconv.Atoi(brokerPort)
-		producerConfig.Port, _ = strconv.Atoi(brokerPort)
-	}
-	consumerConfig.Namespace = os.Getenv("CONSUMER_NAMESPACE")
-	producerConfig.Namespace = os.Getenv("PRODUCER_NAMESPACE")
 
 	modelName := os.Getenv("MODEL_NAME")
 	if modelName == "" {
 		modelName = "gemini-2.5-flash"
 	}
-	handlerEndpoint := os.Getenv("HANDLER_URL")
-	handlerPort := os.Getenv("HANDLER_PORT")
-	handlerUrl := fmt.Sprintf("http://%s:%s", handlerEndpoint, handlerPort)
+	handlerUrl := fmt.Sprintf("http://%s:%s", os.Getenv("HANDLER_URL"), os.Getenv("HANDLER_PORT"))
 
-	// initialize llm
 	ctx := context.Background()
 	geminiClient := models.NewGeminiClient(ctx, modelName, handlerUrl)
-	toolConfigDir, ok := os.LookupEnv("TOOL_CONFIG_DIR")
-	if ok {
-		geminiClient.LoadTools(toolConfigDir)
+	if dir, ok := os.LookupEnv("TOOL_CONFIG_DIR"); ok {
+		geminiClient.LoadTools(dir)
 	}
 
-	// initialize consumer
 	consumer := client.NewConsumer(consumerConfig)
-	err := consumer.Connect()
-	if err != nil {
+	if err := consumer.Connect(); err != nil {
 		logger.Fatal("consumer failed to connect to broker", zap.Error(err))
 	}
 	defer consumer.Disconnect()
 
-	// initialize producer
 	producer := client.NewProducer(producerConfig)
 	if err := producer.Connect(); err != nil {
 		logger.Fatal("producer failed to connect to broker", zap.Error(err))
 	}
 	defer producer.Disconnect()
 
-	// listen for events
 	events := consumer.Subscribe()
 	for {
 		select {
@@ -96,17 +82,31 @@ func main() {
 				logger.Warn("error receiving event", zap.Error(event.Error))
 				continue
 			}
-			if modelCap > 0 {
-				result, err := geminiClient.Query(ctx, string(event.Payload))
-				modelCap -= 1
-				logger.Info("query result", zap.String("result", result))
-				if err != nil {
-					logger.Error("error calling model", zap.Error(err))
-					continue
-				}
-				producer.Produce([]byte(result))
-				logger.Info("result written back to producer")
+
+			var evt supervisor.AgentEvent
+			if err := json.Unmarshal(event.Payload, &evt); err != nil {
+				logger.Error("unmarshal AgentEvent failed", zap.Error(err))
+				continue
 			}
+
+			result, err := geminiClient.Query(ctx, evt.Prompt)
+			resp := supervisor.AgentResponse{
+				RequestID: evt.RequestID,
+				AgentName: evt.AgentName,
+				Result:    result,
+			}
+			if err != nil {
+				resp.Error = err.Error()
+				logger.Error("model query failed", zap.Error(err))
+			} else {
+				logger.Info("query result",
+					zap.String("request_id", evt.RequestID),
+					zap.String("agent", evt.AgentName),
+					zap.String("result", result))
+			}
+
+			data, _ := json.Marshal(resp)
+			producer.Produce(data)
 		}
 	}
 }
