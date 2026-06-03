@@ -64,7 +64,7 @@ func NewScaler(cfg ScalerConfig, logger *zap.Logger) (*Scaler, error) {
 	}, nil
 }
 
-// desiredReplicas computes target replica count: clamp(ceiling(lag / lagPerReplica), min, max)
+// desiredReplicas computes target replica count: clamp(ceiling * (lag / lagPerReplica), min, max)
 func desiredReplicas(lag int64, lagPerReplica, minR, maxR int) int32 {
 	if lag == 0 {
 		return int32(minR)
