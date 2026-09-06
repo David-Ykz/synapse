@@ -17,8 +17,9 @@ type ConsumerConfig struct {
 
 type Consumer struct {
 	ConsumerConfig
-	ctx        context.Context
-	connection net.Conn
+	ctx               context.Context
+	connection        net.Conn
+	resolutionChannel chan bool // true = ack, false = nack
 }
 
 type Event struct {
@@ -29,9 +30,18 @@ type Event struct {
 /* Initializes a new Consumer */
 func NewConsumer(config ConsumerConfig) *Consumer {
 	return &Consumer{
-		ConsumerConfig: config,
-		ctx:            context.Background(),
+		ConsumerConfig:    config,
+		ctx:               context.Background(),
+		resolutionChannel: make(chan bool),
 	}
+}
+
+func (c *Consumer) Ack() {
+	c.resolutionChannel <- true
+}
+
+func (c *Consumer) Nack() {
+	c.resolutionChannel <- false
 }
 
 /* Connects to the broker */
@@ -73,14 +83,32 @@ func (c *Consumer) Subscribe() <-chan Event {
 					return
 				}
 				// get response
-				_, _, payload, err := common.ReadPacket(c.connection)
+				packetType, _, payload, err := common.ReadPacket(c.connection)
 				if err != nil {
 					output <- Event{Error: err}
 					return
 				}
-				// handle data if present, otherwise backoff if specified
-				if len(payload) > 0 {
+				// SERVER_ERROR carries a non-empty diagnostic string too, so packet type is what distinguishes a real message from "queue empty"/not-leader/etc
+				if packetType == common.SERVER_MESSAGE {
 					output <- Event{Payload: payload}
+
+					// wait for the caller to Ack/Nack before polling again — at most one message is in flight on this connection at a time
+					var acked bool
+					select {
+					case <-c.ctx.Done():
+						return
+					case acked = <-c.resolutionChannel:
+					}
+
+					resolutionType := common.CONSUMER_NACK
+					if acked {
+						resolutionType = common.CONSUMER_ACK
+					}
+					if err := common.WritePacket(c.connection, resolutionType, c.Namespace, []byte("")); err != nil {
+						output <- Event{Error: err}
+						return
+					}
+
 					pollInterval = c.PollIntervalMs
 				} else if c.PollBackoff {
 					pollInterval = min(pollInterval*2, c.MaxPollIntervalMs)

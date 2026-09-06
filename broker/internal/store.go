@@ -4,16 +4,29 @@ import (
 	"bufio"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 )
 
 const (
-	DATA_FILE_NAME               = "data"
-	OFFSET_FILE_NAME             = "offset"
-	INDEX_FILE_NAME              = "index"
+	INDEX_FILE_NAME    = "index"
+	SEGMENTS_DIR_NAME  = "segments"
+	DLQNamespaceSuffix = "-dlq"
+
 	OFFSET_BUFFER_MAX_SIZE int64 = 4096
+	// offsetAt/readMessage assume a segment always fits exactly one ring-buffer sweep
+	SEGMENT_SIZE = OFFSET_BUFFER_MAX_SIZE
 )
+
+// inFlightMessage tracks a delivered-but-unacked message
+type inFlightMessage struct {
+	payload     []byte
+	retryCount  int
+	redeliverAt time.Time
+}
 
 type Broker struct {
 	id               int
@@ -22,7 +35,13 @@ type Broker struct {
 	writeBufferSize  int
 	offsets          [OFFSET_BUFFER_MAX_SIZE]int64
 	offsetWriteIndex int64
-	offsetReadIndex  int64
+	offsetReadIndex  int64 // only advances via Raft-applied MarkCompleted
+
+	mu                     sync.Mutex
+	offsetDeliverIndex     int64
+	inFlightMessages       map[int64]*inFlightMessage
+	completedMessages      map[int64]bool
+	unreclaimedSegmentBase int64
 }
 
 func exists(filename string) bool {
@@ -59,6 +78,37 @@ func writeInt64(filename string, val int64) error {
 	return nil
 }
 
+func writeIndexFile(filename string, val int64) error {
+	// overwrites the read-index in place instead of appending
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer f.Close()
+
+	buf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(buf, uint64(val))
+	_, err = f.WriteAt(buf, 0)
+	if err != nil {
+		return fmt.Errorf("failed to write data to file: %w", err)
+	}
+	return nil
+}
+
+func readIndexFile(filename string) (int64, error) {
+	if !exists(filename) {
+		return 0, nil
+	}
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read index file %s: %w", filename, err)
+	}
+	if len(data) < 8 {
+		return 0, nil
+	}
+	return int64(binary.LittleEndian.Uint64(data[:8])), nil
+}
+
 func read(filename string, startOffset int64, endOffset int64) ([]byte, error) {
 	f, err := os.Open(filename)
 	if err != nil {
@@ -89,16 +139,35 @@ func read(filename string, startOffset int64, endOffset int64) ([]byte, error) {
 	return data, nil
 }
 
-func modulo(n int64, m int64) int64 {
-	return ((n % m) + m) % m
+func backoffDuration(base, max time.Duration, retryCount int) time.Duration {
+	if retryCount < 1 {
+		retryCount = 1
+	}
+	// guard against overflow from a runaway retry count
+	if retryCount > 30 {
+		retryCount = 30
+	}
+	d := base
+	for i := 1; i < retryCount; i++ {
+		d *= 2
+		if d >= max {
+			return max
+		}
+	}
+	if d > max {
+		return max
+	}
+	return d
 }
 
 func NewBroker(id int, namespace string, filepath string, writeBufferSize int) *Broker {
 	return &Broker{
-		id:              id,
-		namespace:       namespace,
-		filepath:        filepath,
-		writeBufferSize: writeBufferSize,
+		id:                id,
+		namespace:         namespace,
+		filepath:          filepath,
+		writeBufferSize:   writeBufferSize,
+		inFlightMessages:  make(map[int64]*inFlightMessage),
+		completedMessages: make(map[int64]bool),
 	}
 }
 
@@ -106,113 +175,267 @@ func (b *Broker) fullFilepath(filename string) string {
 	return fmt.Sprintf("%s/%s/%d/%s", b.filepath, b.namespace, b.id, filename)
 }
 
+// segmentBase returns the index of the first message in a given segment
+func (b *Broker) segmentBase(messageIndex int64) int64 {
+	return (messageIndex / SEGMENT_SIZE) * SEGMENT_SIZE
+}
+
+func (b *Broker) segmentPath(base int64, ext string) string {
+	return b.fullFilepath(fmt.Sprintf("%s/%020d.%s", SEGMENTS_DIR_NAME, base, ext))
+}
+
 func (b *Broker) Initialize() error {
 	basePath := b.fullFilepath("")
-	fmt.Println(basePath)
-	// create directories if they don't exist
-	err := os.MkdirAll(basePath, 0755)
-	if err != nil {
+	if err := os.MkdirAll(basePath, 0755); err != nil {
 		return fmt.Errorf("failed to create required directories for path %s: %w", basePath, err)
 	}
-
-	// load offsetReadIndex
-	indexFilepath := b.fullFilepath(INDEX_FILE_NAME)
-	if exists(indexFilepath) {
-		f, err := os.OpenFile(indexFilepath, os.O_RDWR, 0644)
-		if err != nil {
-			return fmt.Errorf("failed to open index file %s: %w", indexFilepath, err)
-		}
-		defer f.Close()
-		_, _ = f.Seek(-8, io.SeekEnd)
-		err = binary.Read(f, binary.LittleEndian, &b.offsetReadIndex)
-		if err != nil {
-			return fmt.Errorf("failed to read index file %s: %w", indexFilepath, err)
-		}
-		f.Truncate(0)
+	segmentsDir := b.fullFilepath(SEGMENTS_DIR_NAME)
+	if err := os.MkdirAll(segmentsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create segments directory %s: %w", segmentsDir, err)
 	}
 
-	// load offsetWriteIndex and initialize offsets
-	offsetFilepath := b.fullFilepath(OFFSET_FILE_NAME)
-	if exists(offsetFilepath) {
-		f, err := os.Open(offsetFilepath)
-		if err != nil {
-			return fmt.Errorf("failed to open offset file %s: %w", offsetFilepath, err)
+	indexFilepath := b.fullFilepath(INDEX_FILE_NAME)
+	var err error
+	b.offsetReadIndex, err = readIndexFile(indexFilepath)
+	if err != nil {
+		return err
+	}
+
+	// finds existing segments
+	entries, err := os.ReadDir(segmentsDir)
+	if err != nil {
+		return fmt.Errorf("failed to read segments directory %s: %w", segmentsDir, err)
+	}
+	writeBase := int64(-1)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".offset") {
+			continue
+		}
+		base, parseErr := strconv.ParseInt(strings.TrimSuffix(name, ".offset"), 10, 64)
+		if parseErr != nil {
+			continue
+		}
+		if base+SEGMENT_SIZE <= b.offsetReadIndex {
+			os.Remove(b.segmentPath(base, "data"))
+			os.Remove(b.segmentPath(base, "offset"))
+			continue
+		}
+		if base > writeBase {
+			writeBase = base
+		}
+	}
+
+	if writeBase >= 0 {
+		offsetPath := b.segmentPath(writeBase, "offset")
+		f, openErr := os.Open(offsetPath)
+		if openErr != nil {
+			return fmt.Errorf("failed to open offset file %s: %w", offsetPath, openErr)
 		}
 		defer f.Close()
 
 		info, _ := f.Stat()
 		numRecords := info.Size() / 8
-		b.offsetWriteIndex = numRecords
+		b.offsetWriteIndex = writeBase + numRecords
 
-		toLoad := min(numRecords, OFFSET_BUFFER_MAX_SIZE)
-
-		for i := int64(1); i <= toLoad; i++ {
-			_, err := f.Seek(-i*8, io.SeekEnd)
-			if err != nil {
-				break
+		for r := int64(0); r < numRecords; r++ {
+			var val int64
+			if err := binary.Read(f, binary.LittleEndian, &val); err != nil {
+				return fmt.Errorf("failed to read offset file %s: %w", offsetPath, err)
 			}
-
-			index := modulo(numRecords-i+1, OFFSET_BUFFER_MAX_SIZE)
-			err = binary.Read(f, binary.LittleEndian, &b.offsets[index])
-			if err != nil {
-				return fmt.Errorf("failed to read offset file %s: %w", offsetFilepath, err)
-			}
+			b.offsets[(writeBase+r+1)%OFFSET_BUFFER_MAX_SIZE] = val
 		}
+	} else {
+		b.offsetWriteIndex = b.segmentBase(b.offsetReadIndex)
 	}
 
-	b.Print()
+	b.offsetDeliverIndex = b.offsetReadIndex
+	b.inFlightMessages = make(map[int64]*inFlightMessage)
+	b.completedMessages = make(map[int64]bool)
+	b.unreclaimedSegmentBase = b.segmentBase(b.offsetReadIndex)
 
 	return nil
+}
+
+// offsetAt returns messageIndex's local start offset within its own segment, falling back to disk once messageIndex falls outside the ring buffer's cached window. Callers must hold b.mu
+func (b *Broker) offsetAt(messageIndex int64) (int64, error) {
+	base := b.segmentBase(messageIndex)
+	if messageIndex == base {
+		return 0, nil // first message of a segment always starts at local offset 0
+	}
+	if b.offsetWriteIndex-messageIndex < OFFSET_BUFFER_MAX_SIZE {
+		return b.offsets[messageIndex%OFFSET_BUFFER_MAX_SIZE], nil
+	}
+
+	offsetPath := b.segmentPath(base, "offset")
+	f, err := os.Open(offsetPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open offset file %s: %w", offsetPath, err)
+	}
+	defer f.Close()
+
+	buf := make([]byte, 8)
+	if _, err := f.ReadAt(buf, (messageIndex-base-1)*8); err != nil {
+		return 0, fmt.Errorf("failed to read offset file %s at record %d: %w", offsetPath, messageIndex-base-1, err)
+	}
+	return int64(binary.LittleEndian.Uint64(buf)), nil
+}
+
+func (b *Broker) readMessage(messageIndex int64) ([]byte, error) {
+	base := b.segmentBase(messageIndex)
+	dataPath := b.segmentPath(base, "data")
+
+	startOffset, err := b.offsetAt(messageIndex)
+	if err != nil {
+		return nil, err
+	}
+
+	var endOffset int64
+	if messageIndex+1 < base+SEGMENT_SIZE {
+		// since messageIndex + 1 is still in the same segment we can use its start offset as messageIndex's end offset
+		endOffset, err = b.offsetAt(messageIndex + 1)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// messageIndex is the last message in its segment, so its end is this segment's data file size
+		info, statErr := os.Stat(dataPath)
+		if statErr != nil {
+			return nil, fmt.Errorf("failed to stat segment data file %s: %w", dataPath, statErr)
+		}
+		endOffset = info.Size()
+	}
+
+	return read(dataPath, startOffset, endOffset)
 }
 
 func (b *Broker) Write(data []byte) error {
-	// write the data
-	dataFilepath := b.fullFilepath(DATA_FILE_NAME)
-	err := write(dataFilepath, b.writeBufferSize, data)
-	if err != nil {
-		return fmt.Errorf("failed to write to data file %s: %w", dataFilepath, err)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	base := b.segmentBase(b.offsetWriteIndex)
+	dataPath := b.segmentPath(base, "data")
+	offsetPath := b.segmentPath(base, "offset")
+
+	if err := write(dataPath, b.writeBufferSize, data); err != nil {
+		return fmt.Errorf("failed to write to data file %s: %w", dataPath, err)
 	}
-	// get previous offset
-	prevOffset := b.offsets[b.offsetWriteIndex%OFFSET_BUFFER_MAX_SIZE]
+
+	var prevOffset int64
+	if b.offsetWriteIndex != base {
+		prevOffset = b.offsets[b.offsetWriteIndex%OFFSET_BUFFER_MAX_SIZE]
+	}
 	newOffset := prevOffset + int64(len(data))
-	// save new offset
+
 	b.offsetWriteIndex++
 	b.offsets[b.offsetWriteIndex%OFFSET_BUFFER_MAX_SIZE] = newOffset
-	// store new offset (for persistence)
-	offsetFilepath := b.fullFilepath(OFFSET_FILE_NAME)
-	err = writeInt64(offsetFilepath, newOffset)
-	if err != nil {
-		return fmt.Errorf("failed to write to offset file %s: %w", offsetFilepath, err)
+
+	if err := writeInt64(offsetPath, newOffset); err != nil {
+		return fmt.Errorf("failed to write to offset file %s: %w", offsetPath, err)
 	}
 	return nil
 }
-func (b *Broker) PeekOne() ([]byte, error) {
-	if b.offsetReadIndex >= b.offsetWriteIndex {
-		return nil, nil
+
+// Deliver returns the next message to redeliver (visibility timeout expired) or if none, the next new message (messageIndex is -1 when nothing is available)
+// If a pending message exhausts its retries, we dead-letter it internally, and the caller must replicate it and call Deliver again
+func (b *Broker) Deliver(maxRetries int, backoffBase, backoffMax time.Duration) (messageIndex int64, payload []byte, deadLetterIndex int64, deadLetterPayload []byte, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	deadLetterIndex = -1
+	now := time.Now()
+
+	// redeliver old pending messages over new messages
+	expired := int64(-1)
+	for i, msg := range b.inFlightMessages {
+		if now.Before(msg.redeliverAt) {
+			continue
+		}
+		if expired == -1 || i < expired {
+			expired = i
+		}
 	}
 
-	startOffset := b.offsets[b.offsetReadIndex%OFFSET_BUFFER_MAX_SIZE]
-	endOffset := b.offsets[(b.offsetReadIndex+1)%OFFSET_BUFFER_MAX_SIZE]
-
-	dataFilepath := b.fullFilepath(DATA_FILE_NAME)
-	data, err := read(dataFilepath, startOffset, endOffset)
-	if err != nil {
-		return nil, fmt.Errorf("failed from data file %s at offset %d - %d: %w", dataFilepath, startOffset, endOffset, err)
+	if expired != -1 {
+		msg := b.inFlightMessages[expired]
+		msg.retryCount++
+		if msg.retryCount > maxRetries {
+			delete(b.inFlightMessages, expired)
+			return -1, nil, expired, msg.payload, nil
+		}
+		msg.redeliverAt = now.Add(backoffDuration(backoffBase, backoffMax, msg.retryCount))
+		return expired, msg.payload, -1, nil, nil
 	}
-	return data, nil
+
+	if b.offsetDeliverIndex < b.offsetReadIndex {
+		b.offsetDeliverIndex = b.offsetReadIndex
+	}
+
+	if b.offsetDeliverIndex >= b.offsetWriteIndex {
+		return -1, nil, -1, nil, nil
+	}
+
+	deliverIndex := b.offsetDeliverIndex
+	data, e := b.readMessage(deliverIndex)
+	if e != nil {
+		return -1, nil, -1, nil, e
+	}
+
+	b.offsetDeliverIndex++
+	b.inFlightMessages[deliverIndex] = &inFlightMessage{
+		payload:     data,
+		retryCount:  0,
+		redeliverAt: now.Add(backoffBase),
+	}
+	return deliverIndex, data, -1, nil, nil
 }
 
-// used by Raft to commit a read across all nodes
-func (b *Broker) AdvanceReadIndex() error {
-	b.offsetReadIndex++
+// Nack marks messageIndex as failed right now, making it immediately eligible for redelivery (or dead-lettering) on the next Deliver call
+func (b *Broker) Nack(messageIndex int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if msg, ok := b.inFlightMessages[messageIndex]; ok {
+		msg.redeliverAt = time.Time{}
+	}
+}
+
+func (b *Broker) MarkCompleted(messageIndex int64) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if messageIndex < b.offsetReadIndex {
+		return nil
+	}
+
+	delete(b.inFlightMessages, messageIndex)
+	b.completedMessages[messageIndex] = true
+
+	for b.completedMessages[b.offsetReadIndex] {
+		delete(b.completedMessages, b.offsetReadIndex)
+		b.offsetReadIndex++
+	}
+
 	indexFilepath := b.fullFilepath(INDEX_FILE_NAME)
-	return writeInt64(indexFilepath, b.offsetReadIndex)
+	if err := writeIndexFile(indexFilepath, b.offsetReadIndex); err != nil {
+		return err
+	}
+
+	for b.unreclaimedSegmentBase+SEGMENT_SIZE <= b.offsetReadIndex {
+		os.Remove(b.segmentPath(b.unreclaimedSegmentBase, "data"))
+		os.Remove(b.segmentPath(b.unreclaimedSegmentBase, "offset"))
+		b.unreclaimedSegmentBase += SEGMENT_SIZE
+	}
+
+	return nil
 }
 
-func (b *Broker) Print() {
-	fmt.Printf("write index: %d, read index: %d\n", b.offsetWriteIndex, b.offsetReadIndex)
-	for i := int64(0); i < b.offsetWriteIndex; i++ {
-		fmt.Printf("index: %d, val: %d\n", i, b.offsets[i])
+// Lag reports how many produced messages are not yet durably resolved (what the autoscaler should treat as outstanding work)
+func (b *Broker) Lag() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	lag := b.offsetWriteIndex - b.offsetReadIndex
+	if lag < 0 {
+		lag = 0
 	}
-	fmt.Println("")
+	return lag
 }

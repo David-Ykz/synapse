@@ -1,6 +1,7 @@
 package synapse
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
@@ -28,14 +29,20 @@ type Server struct {
 	logger                *zap.Logger
 	mutex                 sync.Mutex
 	raftNode              *raft.Raft
+	maxRetries            int
+	backoffBase           time.Duration
+	backoffMax            time.Duration
 }
 
-func NewServer(port int, filepath string, bufferSize int, log *zap.Logger) *Server {
+func NewServer(port int, filepath string, bufferSize int, maxRetries int, backoffBase, backoffMax time.Duration, log *zap.Logger) *Server {
 	return &Server{
 		Port:                  port,
 		Brokers:               make(map[string]*Broker),
 		brokerFilepath:        filepath,
 		brokerWriteBufferSize: bufferSize,
+		maxRetries:            maxRetries,
+		backoffBase:           backoffBase,
+		backoffMax:            backoffMax,
 		logger:                log,
 	}
 }
@@ -110,11 +117,7 @@ func (s *Server) GetLagSnapshot() []LagSnapshot {
 	defer s.mutex.Unlock()
 	out := make([]LagSnapshot, 0, len(s.Brokers))
 	for ns, b := range s.Brokers {
-		lag := b.offsetWriteIndex - b.offsetReadIndex
-		if lag < 0 {
-			lag = 0
-		}
-		out = append(out, LagSnapshot{Namespace: ns, Lag: lag})
+		out = append(out, LagSnapshot{Namespace: ns, Lag: b.Lag()})
 	}
 	return out
 }
@@ -124,13 +127,48 @@ func (s *Server) applyRaftCommand(cmd Command) error {
 	return future.Error()
 }
 
+func encodeIndex(messageIndex int64) []byte {
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, uint64(messageIndex))
+	return buf
+}
+
+// ack replicates that messageIndex has been resolved for a namespace
+func (s *Server) ack(namespace string, messageIndex int64) {
+	if err := s.applyRaftCommand(Command{Type: CmdConsume, Namespace: namespace, Data: encodeIndex(messageIndex)}); err != nil {
+		s.logger.Error("failed to replicate ack", zap.String("namespace", namespace), zap.Error(err))
+	}
+}
+
+// moveToDLQ moves a message that has exhausted all retries to its respective DLQ
+func (s *Server) moveToDLQ(namespace string, messageIndex int64, payload []byte) {
+	dlqNamespace := namespace + DLQNamespaceSuffix
+	if err := s.applyRaftCommand(Command{Type: CmdProduce, Namespace: dlqNamespace, Data: payload}); err != nil {
+		s.logger.Error("failed to write dead letter", zap.String("namespace", dlqNamespace), zap.Error(err))
+	}
+	s.ack(namespace, messageIndex)
+}
+
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
+
+	var pendingBroker *Broker
+	pendingIndex := int64(-1)
+
+	releasePending := func() {
+		if pendingBroker != nil {
+			// treat an abandoned connection as an explicit NACK, so the message doesn't just sit out its full visibility timeout
+			pendingBroker.Nack(pendingIndex)
+			pendingBroker, pendingIndex = nil, -1
+		}
+	}
+	defer releasePending()
+
 	for {
 		packetType, namespace, data, err := common.ReadPacket(conn)
 		if err != nil {
 			s.logger.Error("failed to read packet", zap.Error(err))
-			continue
+			return
 		}
 
 		if s.raftNode.State() != raft.Leader {
@@ -153,22 +191,50 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 
 		case common.CONSUMER_MESSAGE:
-			response, err := broker.PeekOne()
-			if err != nil || response == nil {
-				common.WritePacket(conn, common.SERVER_ERROR, namespace, []byte("ERR_READ_FAILED_OR_EMPTY"))
+			var messageIndex int64 = -1
+			var payload []byte
+			var deliverErr error
+			for {
+				var dlIndex int64
+				var dlPayload []byte
+				messageIndex, payload, dlIndex, dlPayload, deliverErr = broker.Deliver(s.maxRetries, s.backoffBase, s.backoffMax)
+				if deliverErr != nil {
+					break
+				}
+				if dlIndex != -1 {
+					s.moveToDLQ(namespace, dlIndex, dlPayload)
+					continue // this poll may still find a real message (or another dead letter) now
+				}
+				break
+			}
+
+			if deliverErr != nil {
+				s.logger.Error("failed to deliver message", zap.Error(deliverErr))
+				common.WritePacket(conn, common.SERVER_ERROR, namespace, []byte("ERR_READ_FAILED"))
+				continue
+			}
+			if payload == nil {
+				common.WritePacket(conn, common.SERVER_ERROR, namespace, []byte("ERR_EMPTY"))
 				continue
 			}
 
-			err = common.WritePacket(conn, common.SERVER_MESSAGE, namespace, response)
-			if err != nil {
-				continue // failed to write to client so don't advance index
+			if err := common.WritePacket(conn, common.SERVER_MESSAGE, namespace, payload); err != nil {
+				broker.Nack(messageIndex) // client never actually received it; make it redeliverable right away
+				return
 			}
+			pendingBroker, pendingIndex = broker, messageIndex
 
-			// replicate the read index advancement across cluster
-			err = s.applyRaftCommand(Command{Type: CmdConsume, Namespace: namespace})
-			if err != nil {
-				s.logger.Error("failed to replicate read advance", zap.Error(err))
+		case common.CONSUMER_ACK:
+			if pendingBroker != nil {
+				s.ack(namespace, pendingIndex)
 			}
+			pendingBroker, pendingIndex = nil, -1
+
+		case common.CONSUMER_NACK:
+			if pendingBroker != nil {
+				pendingBroker.Nack(pendingIndex)
+			}
+			pendingBroker, pendingIndex = nil, -1
 		}
 	}
 }

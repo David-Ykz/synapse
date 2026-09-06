@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	broker "synapse/broker/internal"
 
@@ -19,6 +20,13 @@ const (
 	DEFAULT_FILEPATH    = "data"
 	BROKER_BUFFER_SIZE  = "BROKER_BUFFER_SIZE"
 	DEFAULT_BUFFER_SIZE = "4096"
+
+	BROKER_MAX_RETRIES      = "BROKER_MAX_RETRIES"
+	DEFAULT_MAX_RETRIES     = "5"
+	BROKER_BACKOFF_BASE_MS  = "BROKER_BACKOFF_BASE_MS"
+	DEFAULT_BACKOFF_BASE_MS = "500"
+	BROKER_BACKOFF_MAX_MS   = "BROKER_BACKOFF_MAX_MS"
+	DEFAULT_BACKOFF_MAX_MS  = "30000"
 
 	MISSING_ENV_MESSAGE = "%s not found, defaulting to %s"
 )
@@ -61,6 +69,12 @@ func main() {
 	bufferSize, _ := strconv.Atoi(getEnvOrDefault("BROKER_BUFFER_SIZE", "4096", logger))
 	filePath := getEnvOrDefault("BROKER_FILEPATH", "data", logger)
 
+	maxRetries, _ := strconv.Atoi(getEnvOrDefault(BROKER_MAX_RETRIES, DEFAULT_MAX_RETRIES, logger))
+	backoffBaseMs, _ := strconv.Atoi(getEnvOrDefault(BROKER_BACKOFF_BASE_MS, DEFAULT_BACKOFF_BASE_MS, logger))
+	backoffMaxMs, _ := strconv.Atoi(getEnvOrDefault(BROKER_BACKOFF_MAX_MS, DEFAULT_BACKOFF_MAX_MS, logger))
+	backoffBase := time.Duration(backoffBaseMs) * time.Millisecond
+	backoffMax := time.Duration(backoffMaxMs) * time.Millisecond
+
 	// Raft specific Envs
 	nodeID := getEnvOrDefault("NODE_ID", "synapse-broker-0", logger)
 	headlessSvc := getEnvOrDefault("HEADLESS_SVC", "synapse-broker-headless.default.svc.cluster.local", logger)
@@ -84,7 +98,7 @@ func main() {
 
 	metricsPort, _ := strconv.Atoi(getEnvOrDefault("METRICS_PORT", "8082", logger))
 
-	server := broker.NewServer(port, filePath, bufferSize, logger)
+	server := broker.NewServer(port, filePath, bufferSize, maxRetries, backoffBase, backoffMax, logger)
 
 	// initialize Raft with the explicitly separated addresses
 	err := server.SetupRaft(myFQDN, myAdvertiseAddr, raftBindAddr, peers)

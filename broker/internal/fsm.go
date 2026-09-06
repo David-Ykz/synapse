@@ -25,8 +25,7 @@ type Command struct {
 	Data      []byte
 }
 
-// encodes a Command into a compact binary format:
-// [1 byte: type] [1 byte: namespace len] [4 bytes: data len] [namespace] [data]
+// encodes a Command as: [1 byte type][1 byte namespace len][4 bytes data len][namespace][data]
 func (c Command) encode() []byte {
 	nsLen := len(c.Namespace)
 	buf := make([]byte, 6+nsLen+len(c.Data))
@@ -78,8 +77,14 @@ func (f *brokerFSM) Apply(log *raft.Log) interface{} {
 			return err
 		}
 	case CmdConsume:
-		if err := broker.AdvanceReadIndex(); err != nil {
-			f.server.logger.Error("FSM AdvanceReadIndex failed", zap.Error(err))
+		if len(cmd.Data) < 8 {
+			err := errors.New("CmdConsume missing index payload")
+			f.server.logger.Error("FSM MarkCompleted failed", zap.Error(err))
+			return err
+		}
+		index := int64(binary.BigEndian.Uint64(cmd.Data))
+		if err := broker.MarkCompleted(index); err != nil {
+			f.server.logger.Error("FSM MarkCompleted failed", zap.Error(err))
 			return err
 		}
 	}
