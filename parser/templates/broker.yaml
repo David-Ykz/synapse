@@ -2,6 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: synapse-broker-headless
+  namespace: {{ .Namespace }}
 spec:
   clusterIP: None
   selector:
@@ -15,6 +16,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: synapse-broker-client
+  namespace: {{ .Namespace }}
 spec:
   selector:
     app: broker
@@ -32,9 +34,10 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: synapse-broker
+  namespace: {{ .Namespace }}
 spec:
   serviceName: "synapse-broker-headless"
-  replicas: 3
+  replicas: {{ .Replicas }}
   selector:
     matchLabels:
       app: broker
@@ -55,11 +58,11 @@ spec:
         - name: RAFT_PORT
           value: "8081"
         - name: REPLICAS
-          value: "3"
+          value: "{{ .Replicas }}"
         - name: STATEFULSET_NAME
           value: "synapse-broker"
         - name: HEADLESS_SVC
-          value: "synapse-broker-headless.default.svc.cluster.local"
+          value: "synapse-broker-headless.{{ .Namespace }}.svc.cluster.local"
         - name: METRICS_PORT
           value: "8082"
         - name: NODE_ID

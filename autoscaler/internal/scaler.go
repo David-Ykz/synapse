@@ -14,11 +14,11 @@ import (
 )
 
 type AgentScalingConfig struct {
-	DeploymentName string `json:"deployment_name"`
-	Namespace      string `json:"input_namespace"`
-	MinReplicas    int    `json:"min_replicas"`
-	MaxReplicas    int    `json:"max_replicas"`
-	LagPerReplica  int    `json:"lag_per_replica"`
+	DeploymentName string   `json:"deployment_name"`
+	Namespaces     []string `json:"input_namespaces"`
+	MinReplicas    int      `json:"min_replicas"`
+	MaxReplicas    int      `json:"max_replicas"`
+	LagPerReplica  int      `json:"lag_per_replica"`
 }
 
 type ScalerConfig struct {
@@ -113,7 +113,10 @@ func (s *Scaler) RunOnce(ctx context.Context) {
 	cooldown := time.Duration(s.config.CooldownSec) * time.Second
 
 	for _, agent := range s.config.Agents {
-		lag := lagMap[agent.Namespace] // defaults to 0 if namespace not yet seen
+		var lag int64
+		for _, ns := range agent.Namespaces {
+			lag += lagMap[ns] // defaults to 0 if namespace not yet seen
+		}
 
 		state := s.agentStates[agent.DeploymentName]
 

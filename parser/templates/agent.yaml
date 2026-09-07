@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .AgentName }}
+  namespace: {{ .Namespace }}
+  labels:
+    app: {{ .AgentName }}
+spec:
+  replicas: {{ .Replicas }}
+  selector:
+    matchLabels:
+      app: {{ .AgentName }}
+  template:
+    metadata:
+      labels:
+        app: {{ .AgentName }}
+    spec:
+      containers:
+      - name: agent
+        image: {{ .Image }}
+        env:
+        - name: BROKER_HOST
+          value: "synapse-broker-client"
+        - name: BROKER_PORT
+          value: "8080"
+        - name: SYNAPSE_CONSUME_NAMESPACES
+          value: "{{ .ConsumeNamespaces }}"
+        - name: SYNAPSE_PRODUCE_NAMESPACES
+          value: "{{ .ProduceNamespaces }}"
+{{- range .Env }}
+        - name: {{ .Name }}
+          value: "{{ .Value }}"
+{{- end }}
+{{- if .EnvFromSecrets }}
+        envFrom:
+{{- range .EnvFromSecrets }}
+        - secretRef:
+            name: {{ . }}
+{{- end }}
+{{- end }}

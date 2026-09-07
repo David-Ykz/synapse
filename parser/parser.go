@@ -2,216 +2,188 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"text/template"
 
 	"gopkg.in/yaml.v3"
 )
 
-type Config struct {
-	Models map[string]ModelConfig `yaml:"models"`
-	Agents map[string]AgentConfig `yaml:"agents"`
+//go:embed templates/agent.yaml
+var agentTemplateSource string
+
+//go:embed templates/broker.yaml
+var brokerTemplateSource string
+
+//go:embed templates/autoscaler.yaml
+var autoscalerTemplateSource string
+
+/*
+SwarmConfig is the top-level shape of the user-authored swarm config: the
+user defines their own agent images, this only describes how they connect
+(via namespaces) and scale
+*/
+type SwarmConfig struct {
+	Namespace string                 `yaml:"namespace"`
+	Broker    BrokerConfig           `yaml:"broker"`
+	Agents    map[string]AgentConfig `yaml:"agents"`
 }
 
-type ModelConfig struct {
-	Name string `yaml:"name"`
+type BrokerConfig struct {
+	Replicas int `yaml:"replicas"`
 }
 
 type AgentConfig struct {
-	InputNamespace  string `yaml:"input_namespace"`
-	OutputNamespace string `yaml:"output_namespace"`
-	NumReplicas     int    `yaml:"replicas"`
-	Model           string `yaml:"model"`
-	HandlerUrl      string `yaml:"handler_url"`
-	MinReplicas     int    `yaml:"min_replicas"`
-	MaxReplicas     int    `yaml:"max_replicas"`
-	LagPerReplica   int    `yaml:"lag_per_replica"`
+	Image          string            `yaml:"image"`
+	Consumes       []string          `yaml:"consumes"`
+	Produces       []string          `yaml:"produces"`
+	Replicas       int               `yaml:"replicas"`
+	MinReplicas    int               `yaml:"min_replicas"`
+	MaxReplicas    int               `yaml:"max_replicas"`
+	LagPerReplica  int               `yaml:"lag_per_replica"`
+	Env            map[string]string `yaml:"env"`
+	EnvFromSecrets []string          `yaml:"env_from_secrets"`
 }
 
+// AutoscalerAgentConfig mirrors autoscaler.AgentScalingConfig's JSON shape
 type AutoscalerAgentConfig struct {
-	DeploymentName string `json:"deployment_name"`
-	Namespace      string `json:"input_namespace"`
-	MinReplicas    int    `json:"min_replicas"`
-	MaxReplicas    int    `json:"max_replicas"`
-	LagPerReplica  int    `json:"lag_per_replica"`
+	DeploymentName string   `json:"deployment_name"`
+	Namespaces     []string `json:"input_namespaces"`
+	MinReplicas    int      `json:"min_replicas"`
+	MaxReplicas    int      `json:"max_replicas"`
+	LagPerReplica  int      `json:"lag_per_replica"`
 }
 
 type AutoscalerTemplateData struct {
+	Namespace         string
 	BrokerMetricsAddr string
 	PollIntervalSec   int
 	CooldownSec       int
 	AgentConfigsJSON  string
-	K8sNamespace      string
+}
+
+type EnvVar struct {
+	Name  string
+	Value string
 }
 
 type AgentTemplateData struct {
-	AgentName       string
-	NumReplicas     int
-	InputNamespace  string
-	OutputNamespace string
-	ModelName       string
-	ToolConfigDir   string
-	HandlerUrl      string
-	Configs         map[string]string
+	Namespace         string
+	AgentName         string
+	Image             string
+	Replicas          int
+	ConsumeNamespaces string // comma-joined
+	ProduceNamespaces string // comma-joined
+	Env               []EnvVar
+	EnvFromSecrets    []string
 }
 
-type HandlerTemplateData struct {
-	HandlerName string
-	HandlerPort string
+type BrokerTemplateData struct {
+	Namespace string
+	Replicas  int
 }
 
-func loadToolConfigs(dirPath string) map[string]string {
-	configs := make(map[string]string)
-
-	files, err := os.ReadDir(dirPath)
-	if err != nil {
-		fmt.Printf("Warning: could not read directory %s: %w\n", dirPath, err)
-		return configs
-	}
-
-	for _, file := range files {
-		if filepath.Ext(file.Name()) == ".json" {
-			path := filepath.Join(dirPath, file.Name())
-			content, err := os.ReadFile(path)
-			if err != nil {
-				fmt.Printf("Error reading file %s: %w\n", path, err)
-				continue
-			}
-			configs[file.Name()] = string(content)
-		}
-	}
-	return configs
+// k8sName sanitizes an agent's config key into a DNS-1123-compliant resource name
+func k8sName(name string) string {
+	return strings.ReplaceAll(name, "_", "-")
 }
 
-func writeTemplateToFile(tmpl *template.Template, data interface{}, filepath string) {
+func writeTemplateToFile(tmpl *template.Template, data interface{}, path string) error {
 	var buf bytes.Buffer
-	err := tmpl.Execute(&buf, data)
-	if err != nil {
-		fmt.Printf("Error filling out template for %s: %w", filepath, err)
-		return
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return fmt.Errorf("render template for %s: %w", path, err)
 	}
-	err = os.WriteFile(filepath, buf.Bytes(), 0644)
-	if err != nil {
-		fmt.Printf("Error writing to file %s: %w\n", filepath, err)
+	if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
+		return fmt.Errorf("write file %s: %w", path, err)
 	}
+	return nil
 }
 
 func main() {
-	// load cli arguments
-	if len(os.Args) < 4 {
-		fmt.Println("Too few arguments. Required: /path/to/workflow.yaml, /path/to/tools_dir/, /path/to/generated_manifests_dir/")
-		return
+	if len(os.Args) < 3 {
+		fmt.Println("Usage: parser <swarm.yaml> <generated_manifests_dir>")
+		os.Exit(1)
 	}
+	swarmConfigPath := os.Args[1]
+	generatedManifestsDir := os.Args[2]
 
-	workflowPath := os.Args[1]
-	toolsDir := os.Args[2]
-	generatedManifestsDir := os.Args[3]
-
-	// read workflow.yaml
-	workflowYamlFile, err := os.ReadFile(workflowPath)
+	swarmConfigFile, err := os.ReadFile(swarmConfigPath)
 	if err != nil {
-		fmt.Println("Error reading workflow.yaml file:", err)
-		return
+		fmt.Println("Error reading swarm config file:", err)
+		os.Exit(1)
 	}
 
-	var config Config
-	err = yaml.Unmarshal(workflowYamlFile, &config)
-	if err != nil {
-		fmt.Println("Error parsing yaml:", err)
-		return
+	var config SwarmConfig
+	if err := yaml.Unmarshal(swarmConfigFile, &config); err != nil {
+		fmt.Println("Error parsing swarm config:", err)
+		os.Exit(1)
+	}
+	if config.Namespace == "" {
+		config.Namespace = "default"
+	}
+	if config.Broker.Replicas <= 0 {
+		config.Broker.Replicas = 3
 	}
 
-	// initialize template functions
-	funcMap := template.FuncMap{
-		"indent": func(spaces int, v string) string {
-			indent := strings.Repeat(" ", spaces)
-			indented := indent + strings.ReplaceAll(v, "\n", "\n"+indent)
-			return strings.TrimRight(indented, " ")
-		},
+	agentTemplate := template.Must(template.New("agent").Parse(agentTemplateSource))
+	brokerTemplate := template.Must(template.New("broker").Parse(brokerTemplateSource))
+	autoscalerTemplate := template.Must(template.New("autoscaler").Parse(autoscalerTemplateSource))
+
+	outDir := generatedManifestsDir + "/generated"
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		fmt.Println("Error creating output directory:", err)
+		os.Exit(1)
 	}
 
-	// load templates
-	agentWorkerBaseTemplate, err := os.ReadFile("templates/agent-worker.yaml")
-	if err != nil {
-		fmt.Println("Error reading agent-worker.yaml template:", err)
-		return
-	}
-	handlerBaseTemplate, err := os.ReadFile("templates/handler.yaml")
-	if err != nil {
-		fmt.Println("Error reading handler.yaml template:", err)
-		return
-	}
-	autoscalerBaseTemplate, err := os.ReadFile("templates/autoscaler.yaml")
-	if err != nil {
-		fmt.Println("Error reading autoscaler.yaml template:", err)
-		return
+	if err := writeTemplateToFile(brokerTemplate, BrokerTemplateData{
+		Namespace: config.Namespace,
+		Replicas:  config.Broker.Replicas,
+	}, outDir+"/broker.yaml"); err != nil {
+		fmt.Println("Error generating broker manifest:", err)
+		os.Exit(1)
 	}
 
-	// parse templates
-	agentWorkerTemplate := template.Must(template.New("agent").Funcs(funcMap).Parse(string(agentWorkerBaseTemplate)))
-	handlerTemplate := template.Must(template.New("handler").Funcs(funcMap).Parse(string(handlerBaseTemplate)))
-	autoscalerTemplate := template.Must(template.New("autoscaler").Funcs(funcMap).Parse(string(autoscalerBaseTemplate)))
-
-	os.MkdirAll(generatedManifestsDir+"/generated", 0755)
-
+	var autoscalerAgents []AutoscalerAgentConfig
 	for agentName, agentConfig := range config.Agents {
 		fmt.Printf("Processing agent: %s\n", agentName)
 
-		// parse model name
-		actualModelName := ""
-		modelInfo, ok := config.Models[agentConfig.Model]
-		if ok {
-			actualModelName = modelInfo.Name
-		} else {
-			fmt.Printf("Warning: model %s not found for agent %s", agentConfig.Model, agentName)
+		if agentConfig.Image == "" {
+			fmt.Printf("Error: agent %s has no image set\n", agentName)
+			os.Exit(1)
 		}
 
-		// read all JSON files from the tools directory (if provided)
-		configs := loadToolConfigs(toolsDir + "/" + agentName)
-
-		// parse handler URL to get endpoint and port
-		handlerParts := strings.Split(agentConfig.HandlerUrl, ":")
-		handlerName := handlerParts[0]
-		handlerPort := "8000"
-		if len(handlerParts) > 1 {
-			handlerPort = handlerParts[1]
-		} else {
-			fmt.Printf("Warning: no port found for handler %s, defaulting to %s", agentConfig.HandlerUrl, handlerPort)
-		}
-
-		numReplicas := agentConfig.NumReplicas
+		replicas := agentConfig.Replicas
 		if agentConfig.MinReplicas > 0 || agentConfig.MaxReplicas > 0 {
-			numReplicas = agentConfig.MinReplicas
+			replicas = agentConfig.MinReplicas
+		}
+		if replicas <= 0 {
+			replicas = 1
+		}
+
+		env := make([]EnvVar, 0, len(agentConfig.Env))
+		for name, value := range agentConfig.Env {
+			env = append(env, EnvVar{Name: name, Value: value})
 		}
 
 		agentData := AgentTemplateData{
-			AgentName:       strings.ReplaceAll(agentName, "_", "-"),
-			NumReplicas:     numReplicas,
-			InputNamespace:  agentConfig.InputNamespace,
-			OutputNamespace: agentConfig.OutputNamespace,
-			ModelName:       actualModelName,
-			ToolConfigDir:   "/etc/configs",
-			HandlerUrl:      agentConfig.HandlerUrl,
-			Configs:         configs,
+			Namespace:         config.Namespace,
+			AgentName:         k8sName(agentName),
+			Image:             agentConfig.Image,
+			Replicas:          replicas,
+			ConsumeNamespaces: strings.Join(agentConfig.Consumes, ","),
+			ProduceNamespaces: strings.Join(agentConfig.Produces, ","),
+			Env:               env,
+			EnvFromSecrets:    agentConfig.EnvFromSecrets,
 		}
 
-		handlerData := HandlerTemplateData{
-			HandlerName: strings.ReplaceAll(handlerName, "_", "-"),
-			HandlerPort: handlerPort,
+		if err := writeTemplateToFile(agentTemplate, agentData, fmt.Sprintf("%s/%s.yaml", outDir, agentData.AgentName)); err != nil {
+			fmt.Println("Error generating agent manifest:", err)
+			os.Exit(1)
 		}
 
-		// write templates
-		writeTemplateToFile(agentWorkerTemplate, agentData, fmt.Sprintf("%s/generated/%s-worker.yaml", generatedManifestsDir, agentData.AgentName))
-		writeTemplateToFile(handlerTemplate, handlerData, fmt.Sprintf("%s/generated/%s-handler.yaml", generatedManifestsDir, agentData.AgentName))
-	}
-
-	// collect autoscaling-enabled agents and generate autoscaler manifest
-	var autoscalerAgents []AutoscalerAgentConfig
-	for agentName, agentConfig := range config.Agents {
 		if agentConfig.MinReplicas == 0 && agentConfig.MaxReplicas == 0 {
 			continue
 		}
@@ -220,8 +192,8 @@ func main() {
 			lagPerReplica = 10
 		}
 		autoscalerAgents = append(autoscalerAgents, AutoscalerAgentConfig{
-			DeploymentName: strings.ReplaceAll(agentName, "_", "-") + "-worker",
-			Namespace:      agentConfig.InputNamespace,
+			DeploymentName: agentData.AgentName,
+			Namespaces:     agentConfig.Consumes,
 			MinReplicas:    agentConfig.MinReplicas,
 			MaxReplicas:    agentConfig.MaxReplicas,
 			LagPerReplica:  lagPerReplica,
@@ -229,17 +201,24 @@ func main() {
 	}
 
 	if len(autoscalerAgents) > 0 {
-		configJSON, _ := json.Marshal(autoscalerAgents)
+		configJSON, err := json.Marshal(autoscalerAgents)
+		if err != nil {
+			fmt.Println("Error marshaling autoscaler config:", err)
+			os.Exit(1)
+		}
 		autoscalerData := AutoscalerTemplateData{
+			Namespace:         config.Namespace,
 			BrokerMetricsAddr: "synapse-broker-client:8082",
 			PollIntervalSec:   15,
 			CooldownSec:       60,
 			AgentConfigsJSON:  string(configJSON),
-			K8sNamespace:      "default",
 		}
-		writeTemplateToFile(autoscalerTemplate, autoscalerData, fmt.Sprintf("%s/generated/autoscaler.yaml", generatedManifestsDir))
+		if err := writeTemplateToFile(autoscalerTemplate, autoscalerData, outDir+"/autoscaler.yaml"); err != nil {
+			fmt.Println("Error generating autoscaler manifest:", err)
+			os.Exit(1)
+		}
 		fmt.Println("Generated autoscaler manifest")
 	}
 
-	fmt.Printf("Successfully generated deployment manifests in %s/generated\n", generatedManifestsDir)
+	fmt.Printf("Successfully generated deployment manifests in %s\n", outDir)
 }
