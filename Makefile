@@ -5,7 +5,3 @@ build-broker:
 build-autoscaler:
 	docker build -t synapse-autoscaler:latest -f autoscaler/Dockerfile .
 	docker save synapse-autoscaler:latest | sudo k3s ctr images import -
-
-build-agent-worker:
-	docker build -t synapse-agent-worker:latest -f workers/Dockerfile .
-	docker save synapse-agent-worker:latest | sudo k3s ctr images import -

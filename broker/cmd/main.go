@@ -28,6 +28,15 @@ const (
 	BROKER_BACKOFF_MAX_MS   = "BROKER_BACKOFF_MAX_MS"
 	DEFAULT_BACKOFF_MAX_MS  = "30000"
 
+	STATE_MAX_ENTRIES               = "STATE_MAX_ENTRIES"
+	DEFAULT_STATE_MAX_ENTRIES       = "100000"
+	STATE_MAX_VALUE_BYTES           = "STATE_MAX_VALUE_BYTES"
+	DEFAULT_STATE_MAX_VALUE_BYTES   = "1048576" // 1 MB
+	STATE_DEFAULT_TTL_MS            = "STATE_DEFAULT_TTL_MS"
+	DEFAULT_STATE_DEFAULT_TTL_MS    = "3600000"
+	STATE_SWEEP_INTERVAL_MS         = "STATE_SWEEP_INTERVAL_MS"
+	DEFAULT_STATE_SWEEP_INTERVAL_MS = "30000"
+
 	MISSING_ENV_MESSAGE = "%s not found, defaulting to %s"
 )
 
@@ -75,6 +84,13 @@ func main() {
 	backoffBase := time.Duration(backoffBaseMs) * time.Millisecond
 	backoffMax := time.Duration(backoffMaxMs) * time.Millisecond
 
+	stateMaxEntries, _ := strconv.Atoi(getEnvOrDefault(STATE_MAX_ENTRIES, DEFAULT_STATE_MAX_ENTRIES, logger))
+	stateMaxValueBytes, _ := strconv.Atoi(getEnvOrDefault(STATE_MAX_VALUE_BYTES, DEFAULT_STATE_MAX_VALUE_BYTES, logger))
+	stateDefaultTTLMs, _ := strconv.Atoi(getEnvOrDefault(STATE_DEFAULT_TTL_MS, DEFAULT_STATE_DEFAULT_TTL_MS, logger))
+	stateSweepIntervalMs, _ := strconv.Atoi(getEnvOrDefault(STATE_SWEEP_INTERVAL_MS, DEFAULT_STATE_SWEEP_INTERVAL_MS, logger))
+	stateDefaultTTL := time.Duration(stateDefaultTTLMs) * time.Millisecond
+	stateSweepInterval := time.Duration(stateSweepIntervalMs) * time.Millisecond
+
 	// Raft specific Envs
 	nodeID := getEnvOrDefault("NODE_ID", "synapse-broker-0", logger)
 	headlessSvc := getEnvOrDefault("HEADLESS_SVC", "synapse-broker-headless.default.svc.cluster.local", logger)
@@ -98,7 +114,7 @@ func main() {
 
 	metricsPort, _ := strconv.Atoi(getEnvOrDefault("METRICS_PORT", "8082", logger))
 
-	server := broker.NewServer(port, filePath, bufferSize, maxRetries, backoffBase, backoffMax, logger)
+	server := broker.NewServer(port, filePath, bufferSize, maxRetries, backoffBase, backoffMax, stateMaxEntries, stateMaxValueBytes, stateDefaultTTL, stateSweepInterval, logger)
 
 	// initialize Raft with the explicitly separated addresses
 	err := server.SetupRaft(myFQDN, myAdvertiseAddr, raftBindAddr, peers)

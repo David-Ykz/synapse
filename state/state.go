@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	client "synapse/client"
 )
 
 type AgentStatus string
@@ -57,16 +58,25 @@ func (rs *RequestState) UpdateAgent(name string, status AgentStatus, output, err
 	}
 }
 
+// Store persists RequestState in the broker's key-value state store, keyed "request:<id>"
+// There's no per-call TTL field in the state wire protocol; the server enforces its own default TTL on stored keys
 type Store struct {
-	client *redis.Client
-	ttl    time.Duration
+	client *client.StateClient
+	mu     sync.Mutex
 }
 
-func NewStore(addr string, ttl time.Duration) *Store {
-	return &Store{
-		client: redis.NewClient(&redis.Options{Addr: addr}),
-		ttl:    ttl,
-	}
+func NewStore(host string, port int) *Store {
+	return &Store{client: client.NewStateClient(host, port)}
+}
+
+// Connect connects the underlying state client to the broker
+func (s *Store) Connect() error {
+	return s.client.Connect()
+}
+
+// Disconnect closes the underlying state client's connection
+func (s *Store) Disconnect() error {
+	return s.client.Disconnect()
 }
 
 func (s *Store) Save(ctx context.Context, rs *RequestState) error {
@@ -75,11 +85,15 @@ func (s *Store) Save(ctx context.Context, rs *RequestState) error {
 	if err != nil {
 		return fmt.Errorf("marshal request state: %w", err)
 	}
-	return s.client.Set(ctx, "request:"+rs.RequestID, data, s.ttl).Err()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.client.Set("request:"+rs.RequestID, data)
 }
 
 func (s *Store) Load(ctx context.Context, requestID string) (*RequestState, error) {
-	data, err := s.client.Get(ctx, "request:"+requestID).Bytes()
+	s.mu.Lock()
+	data, err := s.client.Get("request:" + requestID)
+	s.mu.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("load request state %s: %w", requestID, err)
 	}
@@ -91,5 +105,7 @@ func (s *Store) Load(ctx context.Context, requestID string) (*RequestState, erro
 }
 
 func (s *Store) Delete(ctx context.Context, requestID string) error {
-	return s.client.Del(ctx, "request:"+requestID).Err()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.client.Delete("request:" + requestID)
 }

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,9 +16,14 @@ import (
 type CommandType byte
 
 const (
-	CmdProduce CommandType = 0x01
-	CmdConsume CommandType = 0x02
+	CmdProduce     CommandType = 0x01
+	CmdConsume     CommandType = 0x02
+	CmdStateSet    CommandType = 0x03
+	CmdStateDelete CommandType = 0x04
 )
+
+// StateSnapshotFileName holds the StateStore's serialized contents inside the broker data directory, tarred/untarred alongside every namespace's data by the generic snapshot logic below
+const StateSnapshotFileName = "state_snapshot.json"
 
 type Command struct {
 	Type      CommandType
@@ -68,15 +74,15 @@ func (f *brokerFSM) Apply(log *raft.Log) interface{} {
 		return err
 	}
 
-	broker := f.server.getOrCreateBroker(cmd.Namespace)
-
 	switch cmd.Type {
 	case CmdProduce:
+		broker := f.server.getOrCreateBroker(cmd.Namespace)
 		if err := broker.Write(cmd.Data); err != nil {
 			f.server.logger.Error("FSM Write failed", zap.Error(err))
 			return err
 		}
 	case CmdConsume:
+		broker := f.server.getOrCreateBroker(cmd.Namespace)
 		if len(cmd.Data) < 8 {
 			err := errors.New("CmdConsume missing index payload")
 			f.server.logger.Error("FSM MarkCompleted failed", zap.Error(err))
@@ -87,12 +93,28 @@ func (f *brokerFSM) Apply(log *raft.Log) interface{} {
 			f.server.logger.Error("FSM MarkCompleted failed", zap.Error(err))
 			return err
 		}
+	case CmdStateSet:
+		// cmd.Namespace is the key here (the state store is a global instance instead of per-namespance)
+		// the returned error is a normal outcome (not logged as a failure). The caller reads it back via future.Response()
+		return f.server.stateStore.Set(cmd.Namespace, cmd.Data)
+	case CmdStateDelete:
+		f.server.stateStore.Delete(cmd.Namespace)
 	}
 	return nil
 }
 
 func (f *brokerFSM) Snapshot() (raft.FSMSnapshot, error) {
 	f.server.logger.Info("Starting FSM snapshot")
+
+	data, err := f.server.stateStore.Dump()
+	if err != nil {
+		return nil, fmt.Errorf("failed to dump state store: %w", err)
+	}
+	stateSnapshotPath := filepath.Join(f.server.brokerFilepath, StateSnapshotFileName)
+	if err := os.WriteFile(stateSnapshotPath, data, 0644); err != nil {
+		return nil, fmt.Errorf("failed to write state snapshot file: %w", err)
+	}
+
 	return &brokerSnapshot{
 		basePath: f.server.brokerFilepath,
 	}, nil
@@ -133,6 +155,14 @@ func (f *brokerFSM) Restore(rc io.ReadCloser) error {
 			return err
 		}
 		file.Close()
+	}
+
+	// restore the state store if the restored directory has a snapshot of it, missing entirely on a brand new cluster
+	stateSnapshotPath := filepath.Join(f.server.brokerFilepath, StateSnapshotFileName)
+	if data, err := os.ReadFile(stateSnapshotPath); err == nil {
+		if err := f.server.stateStore.Load(data); err != nil {
+			return fmt.Errorf("failed to load state snapshot: %w", err)
+		}
 	}
 
 	// re-initialize all brokers

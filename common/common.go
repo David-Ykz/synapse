@@ -17,6 +17,9 @@ const (
 	SERVER_MESSAGE
 	CONSUMER_ACK
 	CONSUMER_NACK
+	STATE_SET
+	STATE_GET
+	STATE_DELETE
 )
 
 type Config struct {
@@ -58,6 +61,10 @@ func ReadPacket(conn net.Conn) (packetType PacketType, namespace string, payload
 }
 
 func WritePacket(conn net.Conn, packetType PacketType, namespace string, payload []byte) error {
+	if len(namespace) > 255 {
+		return fmt.Errorf("namespace or key too long: %d bytes, max 255", len(namespace))
+	}
+
 	header := make([]byte, 8)
 	header[2] = byte(packetType)
 	header[3] = byte(len(namespace))
