@@ -12,6 +12,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+//go:embed templates/namespace.yaml
+var namespaceTemplateSource string
+
 //go:embed templates/agent.yaml
 var agentTemplateSource string
 
@@ -86,6 +89,10 @@ type BrokerTemplateData struct {
 	Replicas  int
 }
 
+type NamespaceTemplateData struct {
+	Namespace string
+}
+
 // k8sName sanitizes an agent's config key into a DNS-1123-compliant resource name
 func k8sName(name string) string {
 	return strings.ReplaceAll(name, "_", "-")
@@ -128,6 +135,7 @@ func main() {
 		config.Broker.Replicas = 3
 	}
 
+	namespaceTemplate := template.Must(template.New("namespace").Parse(namespaceTemplateSource))
 	agentTemplate := template.Must(template.New("agent").Parse(agentTemplateSource))
 	brokerTemplate := template.Must(template.New("broker").Parse(brokerTemplateSource))
 	autoscalerTemplate := template.Must(template.New("autoscaler").Parse(autoscalerTemplateSource))
@@ -135,6 +143,13 @@ func main() {
 	outDir := generatedManifestsDir + "/generated"
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		fmt.Println("Error creating output directory:", err)
+		os.Exit(1)
+	}
+
+	if err := writeTemplateToFile(namespaceTemplate, NamespaceTemplateData{
+		Namespace: config.Namespace,
+	}, outDir+"/namespace.yaml"); err != nil {
+		fmt.Println("Error generating namespace manifest:", err)
 		os.Exit(1)
 	}
 

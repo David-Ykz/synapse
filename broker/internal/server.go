@@ -202,7 +202,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 			err := s.applyRaftCommand(Command{Type: CmdProduce, Namespace: namespace, Data: data})
 			if err != nil {
 				s.logger.Error("failed to replicate write", zap.Error(err))
+				common.WritePacket(conn, common.SERVER_ERROR, namespace, []byte("ERR_WRITE_FAILED"))
+				continue
 			}
+			// ack the write so Producer can detect and retry a not-leader rejection instead of
+			// silently dropping the message; previously this case sent no response on success at all
+			common.WritePacket(conn, common.SERVER_MESSAGE, namespace, []byte(""))
 
 		case common.CONSUMER_MESSAGE:
 			broker := s.getOrCreateBroker(namespace)

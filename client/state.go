@@ -4,15 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	common "synapse/common"
 )
 
 // ErrNotFound is returned by Get when the key has no stored value
 var ErrNotFound = errors.New("state: key not found")
-
-// ErrNotLeader is returned when the connected broker node isn't the current raft leader; callers may want to retry against a different node
-var ErrNotLeader = errors.New("state: not leader")
 
 // ErrCapacityExceeded is returned by Set when the store has no room left for the new value
 var ErrCapacityExceeded = errors.New("state: capacity exceeded")
@@ -34,13 +32,58 @@ func NewStateClient(host string, port int) *StateClient {
 
 // Connect connects to the broker
 func (s *StateClient) Connect() error {
-	addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
-	conn, err := net.Dial("tcp", addr)
+	conn, err := dial(s.Host, s.Port)
 	if err != nil {
-		return fmt.Errorf("failed to connect to broker at address %s: %w", addr, err)
+		return err
 	}
 	s.connection = conn
 	return nil
+}
+
+// reconnect closes the current connection and opens a fresh one to the same address; used to retry
+// against a different broker pod after ERR_NOT_LEADER, since a k8s Service load-balances new
+// connections across replicas but the wire protocol itself has no leader-redirect of its own
+func (s *StateClient) reconnect() error {
+	if s.connection != nil {
+		s.connection.Close()
+	}
+	conn, err := dial(s.Host, s.Port)
+	if err != nil {
+		return err
+	}
+	s.connection = conn
+	return nil
+}
+
+// request performs one request/response round trip, and reconnects/retries if the
+// connected node isn't the raft leader or the connection drops mid-request
+func (s *StateClient) request(packetType common.PacketType, key string, payload []byte) (common.PacketType, []byte, error) {
+	var lastErr error
+	for attempt := 0; attempt <= maxLeaderRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(leaderRetryDelay)
+			if err := s.reconnect(); err != nil {
+				lastErr = err
+				continue
+			}
+		}
+		s.connection.SetDeadline(time.Now().Add(requestTimeout))
+		if err := common.WritePacket(s.connection, packetType, key, payload); err != nil {
+			lastErr = fmt.Errorf("failed to write state request: %w", err)
+			continue
+		}
+		respType, _, respPayload, err := common.ReadPacket(s.connection)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read state response: %w", err)
+			continue
+		}
+		if respType == common.SERVER_ERROR && string(respPayload) == errNotLeaderPayload {
+			lastErr = ErrNotLeader
+			continue
+		}
+		return respType, respPayload, nil
+	}
+	return 0, nil, lastErr
 }
 
 // Disconnect sends a disconnect signal to the broker and terminates the connection
@@ -55,12 +98,9 @@ func (s *StateClient) Disconnect() error {
 
 // Set stores value under key
 func (s *StateClient) Set(key string, value []byte) error {
-	if err := common.WritePacket(s.connection, common.STATE_SET, key, value); err != nil {
-		return fmt.Errorf("failed to write state set request: %w", err)
-	}
-	packetType, _, payload, err := common.ReadPacket(s.connection)
+	packetType, payload, err := s.request(common.STATE_SET, key, value)
 	if err != nil {
-		return fmt.Errorf("failed to read state set response: %w", err)
+		return err
 	}
 	if packetType == common.SERVER_ERROR {
 		return stateError(payload)
@@ -70,12 +110,9 @@ func (s *StateClient) Set(key string, value []byte) error {
 
 // Get retrieves the value stored under key, returning ErrNotFound if it doesn't exist
 func (s *StateClient) Get(key string) ([]byte, error) {
-	if err := common.WritePacket(s.connection, common.STATE_GET, key, []byte("")); err != nil {
-		return nil, fmt.Errorf("failed to write state get request: %w", err)
-	}
-	packetType, _, payload, err := common.ReadPacket(s.connection)
+	packetType, payload, err := s.request(common.STATE_GET, key, []byte(""))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read state get response: %w", err)
+		return nil, err
 	}
 	if packetType == common.SERVER_ERROR {
 		return nil, stateError(payload)
@@ -85,12 +122,9 @@ func (s *StateClient) Get(key string) ([]byte, error) {
 
 // Delete removes key, it is idempotent and does not error on a missing key
 func (s *StateClient) Delete(key string) error {
-	if err := common.WritePacket(s.connection, common.STATE_DELETE, key, []byte("")); err != nil {
-		return fmt.Errorf("failed to write state delete request: %w", err)
-	}
-	packetType, _, payload, err := common.ReadPacket(s.connection)
+	packetType, payload, err := s.request(common.STATE_DELETE, key, []byte(""))
 	if err != nil {
-		return fmt.Errorf("failed to read state delete response: %w", err)
+		return err
 	}
 	if packetType == common.SERVER_ERROR {
 		return stateError(payload)
