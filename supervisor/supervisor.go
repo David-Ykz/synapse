@@ -2,7 +2,6 @@ package supervisor
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -15,54 +14,44 @@ import (
 	"go.uber.org/zap"
 )
 
-// AgentEvent is the message dispatched to an agent worker.
-type AgentEvent struct {
-	RequestID string `json:"request_id"`
+// AgentDispatch is the content of the common.Envelope sent to an agent worker; the envelope's RequestID correlates it back to the originating request
+type AgentDispatch struct {
 	AgentName string `json:"agent_name"`
 	Prompt    string `json:"prompt"`
 }
 
-// AgentResponse is the message an agent worker sends back to the supervisor.
-type AgentResponse struct {
-	RequestID string `json:"request_id"`
+// AgentResult is the content of the common.Envelope an agent worker sends back once it has finished an attempt, only for an attempt it actually completed; a transient failure worth retrying is a Consumer.Nack on the original dispatch, not an AgentResult with Error set
+type AgentResult struct {
 	AgentName string `json:"agent_name"`
 	Result    string `json:"result"`
 	Error     string `json:"error,omitempty"`
 }
 
-// PlannedAgent describes an agent task to be dispatched.
+// PlannedAgent describes an agent task to be dispatched
 type PlannedAgent struct {
 	Name      string
 	Namespace string // broker namespace of the target agent worker
 	Prompt    string
 }
 
-// Handler is implemented by the user to define supervisor behavior.
+// Handler is implemented by the user to define supervisor behavior
 type Handler interface {
-	// PlanAgents decides which agents to invoke and builds their prompts.
-	// Called once when a new user request arrives.
+	// PlanAgents decides which agents to invoke and builds their prompts; called once when a new user request arrives
 	PlanAgents(ctx context.Context, userPrompt string, rs *state.RequestState) ([]PlannedAgent, error)
 
-	// OnAgentDone is called after each agent completes (success or error).
-	// Return replacement PlannedAgents to retry or add new work; return nil to proceed.
-	// Implementations should update rs.Context with any relevant output.
-	OnAgentDone(ctx context.Context, rs *state.RequestState, resp AgentResponse) ([]PlannedAgent, error)
+	// OnAgentDone is called after each agent completes; return replacement PlannedAgents to retry/add work or nil to proceed, updating rs.Context as needed
+	OnAgentDone(ctx context.Context, rs *state.RequestState, resp AgentResult) ([]PlannedAgent, error)
 
-	// BuildFinalResponse compiles the final answer once all agents are terminal.
+	// BuildFinalResponse compiles the final answer once all agents are terminal
 	BuildFinalResponse(ctx context.Context, rs *state.RequestState) (string, error)
 }
 
 type Config struct {
-	// InputNamespace is where user requests arrive.
-	InputNamespace string
-	// ResultNamespace is where agent workers publish their responses.
-	ResultNamespace string
-	// OutputNamespace is where final responses are published.
-	OutputNamespace string
+	InputNamespace  string // where user requests arrive
+	ResultNamespace string // where agent workers publish their responses
+	OutputNamespace string // where final responses are published
 	BrokerHost      string
 	BrokerPort      int
-	RedisAddr       string
-	RequestTTL      time.Duration
 }
 
 type Supervisor struct {
@@ -80,7 +69,7 @@ type Supervisor struct {
 func New(cfg Config, handler Handler, logger *zap.Logger) *Supervisor {
 	return &Supervisor{
 		cfg:       cfg,
-		store:     state.NewStore(cfg.RedisAddr, cfg.RequestTTL),
+		store:     state.NewStore(cfg.BrokerHost, cfg.BrokerPort),
 		handler:   handler,
 		logger:    logger,
 		producers: make(map[string]*client.Producer),
@@ -88,6 +77,10 @@ func New(cfg Config, handler Handler, logger *zap.Logger) *Supervisor {
 }
 
 func (s *Supervisor) Connect() error {
+	if err := s.store.Connect(); err != nil {
+		return fmt.Errorf("connect state store: %w", err)
+	}
+
 	s.consumer = client.NewConsumer(client.ConsumerConfig{
 		Config: common.Config{
 			Host:        s.cfg.BrokerHost,
@@ -132,6 +125,7 @@ func (s *Supervisor) Connect() error {
 }
 
 func (s *Supervisor) Disconnect() {
+	s.store.Disconnect()
 	s.consumer.Disconnect()
 	s.resultConsumer.Disconnect()
 	s.outputProducer.Disconnect()
@@ -163,20 +157,17 @@ func (s *Supervisor) getProducer(namespace string) (*client.Producer, error) {
 
 func (s *Supervisor) dispatch(ctx context.Context, rs *state.RequestState, agents []PlannedAgent) error {
 	for _, a := range agents {
-		evt := AgentEvent{
-			RequestID: rs.RequestID,
+		env := common.NewEnvelope(rs.RequestID, common.StatusOK, AgentDispatch{
 			AgentName: a.Name,
 			Prompt:    a.Prompt,
-		}
-		data, err := json.Marshal(evt)
-		if err != nil {
-			return fmt.Errorf("marshal agent event: %w", err)
-		}
+		})
 		p, err := s.getProducer(a.Namespace)
 		if err != nil {
 			return err
 		}
-		p.Produce(data)
+		if err := client.ProduceEnvelope(p, env); err != nil {
+			return fmt.Errorf("produce agent dispatch: %w", err)
+		}
 		rs.UpdateAgent(a.Name, state.StatusRunning, "", "")
 	}
 	return s.store.Save(ctx, rs)
@@ -185,6 +176,16 @@ func (s *Supervisor) dispatch(ctx context.Context, rs *state.RequestState, agent
 func (s *Supervisor) handleRequest(ctx context.Context, payload []byte) {
 	requestID := uuid.New().String()
 	userPrompt := string(payload)
+
+	// The consumer connection blocks for this verdict before polling again, so every return path must resolve it exactly once
+	success := false
+	defer func() {
+		if success {
+			s.consumer.Ack()
+		} else {
+			s.consumer.Nack()
+		}
+	}()
 
 	rs := &state.RequestState{
 		RequestID:  requestID,
@@ -214,6 +215,7 @@ func (s *Supervisor) handleRequest(ctx context.Context, payload []byte) {
 		return
 	}
 
+	success = true
 	if err := s.dispatch(ctx, rs, agents); err != nil {
 		s.logger.Error("dispatch failed", zap.String("request_id", requestID), zap.Error(err))
 	}
@@ -222,22 +224,28 @@ func (s *Supervisor) handleRequest(ctx context.Context, payload []byte) {
 		zap.Int("agents", len(agents)))
 }
 
-// handleResult processes agent responses serially to avoid concurrent writes to the same request state.
-func (s *Supervisor) handleResult(ctx context.Context, payload []byte) {
-	var resp AgentResponse
-	if err := json.Unmarshal(payload, &resp); err != nil {
-		s.logger.Error("unmarshal agent response failed", zap.Error(err))
-		return
-	}
+// handleResult processes agent responses serially to avoid concurrent writes to the same request state
+func (s *Supervisor) handleResult(ctx context.Context, env common.Envelope[AgentResult]) {
+	// The result consumer connection blocks for this verdict before polling again, so every return path must resolve it exactly once
+	success := false
+	defer func() {
+		if success {
+			s.resultConsumer.Ack()
+		} else {
+			s.resultConsumer.Nack()
+		}
+	}()
 
-	rs, err := s.store.Load(ctx, resp.RequestID)
+	resp := env.Content
+
+	rs, err := s.store.Load(ctx, env.RequestID)
 	if err != nil {
 		s.logger.Error("load request state failed",
-			zap.String("request_id", resp.RequestID), zap.Error(err))
+			zap.String("request_id", env.RequestID), zap.Error(err))
 		return
 	}
 
-	if resp.Error != "" {
+	if env.Status == common.StatusError {
 		rs.UpdateAgent(resp.AgentName, state.StatusError, "", resp.Error)
 	} else {
 		rs.UpdateAgent(resp.AgentName, state.StatusDone, resp.Result, "")
@@ -246,11 +254,12 @@ func (s *Supervisor) handleResult(ctx context.Context, payload []byte) {
 	retry, err := s.handler.OnAgentDone(ctx, rs, resp)
 	if err != nil {
 		s.logger.Error("OnAgentDone failed",
-			zap.String("request_id", resp.RequestID), zap.Error(err))
+			zap.String("request_id", env.RequestID), zap.Error(err))
 		return
 	}
 
 	if len(retry) > 0 {
+		success = true
 		for _, a := range retry {
 			rs.Agents = append(rs.Agents, state.AgentTask{
 				Name:      a.Name,
@@ -260,38 +269,40 @@ func (s *Supervisor) handleResult(ctx context.Context, payload []byte) {
 		}
 		if err := s.dispatch(ctx, rs, retry); err != nil {
 			s.logger.Error("retry dispatch failed",
-				zap.String("request_id", resp.RequestID), zap.Error(err))
+				zap.String("request_id", env.RequestID), zap.Error(err))
 		}
 		return
 	}
 
 	if err := s.store.Save(ctx, rs); err != nil {
-		s.logger.Error("save state failed", zap.String("request_id", resp.RequestID), zap.Error(err))
+		s.logger.Error("save state failed", zap.String("request_id", env.RequestID), zap.Error(err))
 		return
 	}
 
 	if !rs.AllTerminal() {
+		success = true
 		return
 	}
 
 	finalResponse, err := s.handler.BuildFinalResponse(ctx, rs)
 	if err != nil {
 		s.logger.Error("BuildFinalResponse failed",
-			zap.String("request_id", resp.RequestID), zap.Error(err))
+			zap.String("request_id", env.RequestID), zap.Error(err))
 		return
 	}
 
+	success = true
 	s.outputProducer.Produce([]byte(finalResponse))
-	if err := s.store.Delete(ctx, resp.RequestID); err != nil {
+	if err := s.store.Delete(ctx, env.RequestID); err != nil {
 		s.logger.Warn("delete request state failed",
-			zap.String("request_id", resp.RequestID), zap.Error(err))
+			zap.String("request_id", env.RequestID), zap.Error(err))
 	}
-	s.logger.Info("request completed", zap.String("request_id", resp.RequestID))
+	s.logger.Info("request completed", zap.String("request_id", env.RequestID))
 }
 
 func (s *Supervisor) Run(ctx context.Context) {
 	requests := s.consumer.Subscribe()
-	results := s.resultConsumer.Subscribe()
+	results := client.SubscribeEnvelope[AgentResult](s.resultConsumer)
 
 	for {
 		select {
@@ -305,18 +316,25 @@ func (s *Supervisor) Run(ctx context.Context) {
 				s.logger.Warn("request event error", zap.Error(event.Error))
 				continue
 			}
-			// Run in goroutine — PlanAgents may do LLM calls.
+			// Run in goroutine, PlanAgents may do LLM calls
 			go s.handleRequest(ctx, event.Payload)
-		case event, ok := <-results:
+		case envEvent, ok := <-results:
 			if !ok {
 				return
 			}
-			if event.Error != nil {
-				s.logger.Warn("result event error", zap.Error(event.Error))
+			if envEvent.Error != nil {
+				// transport failure: no message to resolve, connection is dead
+				s.logger.Warn("result event error", zap.Error(envEvent.Error))
 				continue
 			}
-			// Processed serially to avoid concurrent writes to the same request state.
-			s.handleResult(ctx, event.Payload)
+			if envEvent.DecodeError != nil {
+				// a message WAS delivered, just not valid AgentResult JSON, still needs resolving so the broker can back off and eventually DLQ it
+				s.logger.Warn("result envelope decode error", zap.Error(envEvent.DecodeError))
+				s.resultConsumer.Nack()
+				continue
+			}
+			// Processed serially to avoid concurrent writes to the same request state
+			s.handleResult(ctx, envEvent.Envelope)
 		}
 	}
 }
