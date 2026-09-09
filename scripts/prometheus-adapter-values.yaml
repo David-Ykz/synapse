@@ -1,0 +1,15 @@
+
+prometheus:
+  url: http://prometheus-server.monitoring.svc
+  port: 80
+
+rules:
+  external:
+    - seriesQuery: '{__name__="synapse_broker_lag"}'
+      resources:
+        overrides:
+          namespace:
+            resource: "namespace"
+      metricsQuery: 'sum(max by (queue) (<<.Series>>{<<.LabelMatchers>>}))'
+      name:
+        as: "synapse_broker_lag"

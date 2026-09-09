@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -20,9 +19,6 @@ var agentTemplateSource string
 
 //go:embed templates/broker.yaml
 var brokerTemplateSource string
-
-//go:embed templates/autoscaler.yaml
-var autoscalerTemplateSource string
 
 /*
 SwarmConfig is the top-level shape of the user-authored swarm config: the
@@ -51,21 +47,21 @@ type AgentConfig struct {
 	EnvFromSecrets []string          `yaml:"env_from_secrets"`
 }
 
-// AutoscalerAgentConfig mirrors autoscaler.AgentScalingConfig's JSON shape
-type AutoscalerAgentConfig struct {
-	DeploymentName string   `json:"deployment_name"`
-	Namespaces     []string `json:"input_namespaces"`
-	MinReplicas    int      `json:"min_replicas"`
-	MaxReplicas    int      `json:"max_replicas"`
-	LagPerReplica  int      `json:"lag_per_replica"`
-}
+// hpaScaleDownStabilizationSeconds limits how quickly a HorizontalPodAutoscaler will scale an
+// agent back down once lag drops
+const hpaScaleDownStabilizationSeconds = 60
 
-type AutoscalerTemplateData struct {
-	Namespace         string
-	BrokerMetricsAddr string
-	PollIntervalSec   int
-	CooldownSec       int
-	AgentConfigsJSON  string
+// defaultLagPerReplica is used when an agent sets scaling bounds but no lag_per_replica
+const defaultLagPerReplica = 10
+
+// HPATemplateData holds the scaling fields for an agent's generated HorizontalPodAutoscaler
+// the metric queries the broker's synapse_broker_lag External metric
+type HPATemplateData struct {
+	MinReplicas                   int
+	MaxReplicas                   int
+	LagPerReplica                 int
+	ConsumeNamespaces             []string
+	ScaleDownStabilizationSeconds int
 }
 
 type EnvVar struct {
@@ -82,6 +78,7 @@ type AgentTemplateData struct {
 	ProduceNamespaces string // comma-joined
 	Env               []EnvVar
 	EnvFromSecrets    []string
+	HPA               *HPATemplateData
 }
 
 type BrokerTemplateData struct {
@@ -138,7 +135,6 @@ func main() {
 	namespaceTemplate := template.Must(template.New("namespace").Parse(namespaceTemplateSource))
 	agentTemplate := template.Must(template.New("agent").Parse(agentTemplateSource))
 	brokerTemplate := template.Must(template.New("broker").Parse(brokerTemplateSource))
-	autoscalerTemplate := template.Must(template.New("autoscaler").Parse(autoscalerTemplateSource))
 
 	outDir := generatedManifestsDir + "/generated"
 	if err := os.MkdirAll(outDir, 0755); err != nil {
@@ -161,7 +157,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	var autoscalerAgents []AutoscalerAgentConfig
 	for agentName, agentConfig := range config.Agents {
 		fmt.Printf("Processing agent: %s\n", agentName)
 
@@ -194,45 +189,24 @@ func main() {
 			EnvFromSecrets:    agentConfig.EnvFromSecrets,
 		}
 
+		if agentConfig.MinReplicas > 0 || agentConfig.MaxReplicas > 0 {
+			lagPerReplica := agentConfig.LagPerReplica
+			if lagPerReplica == 0 {
+				lagPerReplica = defaultLagPerReplica
+			}
+			agentData.HPA = &HPATemplateData{
+				MinReplicas:                   agentConfig.MinReplicas,
+				MaxReplicas:                   agentConfig.MaxReplicas,
+				LagPerReplica:                 lagPerReplica,
+				ConsumeNamespaces:             agentConfig.Consumes,
+				ScaleDownStabilizationSeconds: hpaScaleDownStabilizationSeconds,
+			}
+		}
+
 		if err := writeTemplateToFile(agentTemplate, agentData, fmt.Sprintf("%s/%s.yaml", outDir, agentData.AgentName)); err != nil {
 			fmt.Println("Error generating agent manifest:", err)
 			os.Exit(1)
 		}
-
-		if agentConfig.MinReplicas == 0 && agentConfig.MaxReplicas == 0 {
-			continue
-		}
-		lagPerReplica := agentConfig.LagPerReplica
-		if lagPerReplica == 0 {
-			lagPerReplica = 10
-		}
-		autoscalerAgents = append(autoscalerAgents, AutoscalerAgentConfig{
-			DeploymentName: agentData.AgentName,
-			Namespaces:     agentConfig.Consumes,
-			MinReplicas:    agentConfig.MinReplicas,
-			MaxReplicas:    agentConfig.MaxReplicas,
-			LagPerReplica:  lagPerReplica,
-		})
-	}
-
-	if len(autoscalerAgents) > 0 {
-		configJSON, err := json.Marshal(autoscalerAgents)
-		if err != nil {
-			fmt.Println("Error marshaling autoscaler config:", err)
-			os.Exit(1)
-		}
-		autoscalerData := AutoscalerTemplateData{
-			Namespace:         config.Namespace,
-			BrokerMetricsAddr: "synapse-broker-client:8082",
-			PollIntervalSec:   15,
-			CooldownSec:       60,
-			AgentConfigsJSON:  string(configJSON),
-		}
-		if err := writeTemplateToFile(autoscalerTemplate, autoscalerData, outDir+"/autoscaler.yaml"); err != nil {
-			fmt.Println("Error generating autoscaler manifest:", err)
-			os.Exit(1)
-		}
-		fmt.Println("Generated autoscaler manifest")
 	}
 
 	fmt.Printf("Successfully generated deployment manifests in %s\n", outDir)

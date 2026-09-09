@@ -38,3 +38,37 @@ spec:
             name: {{ . }}
 {{- end }}
 {{- end }}
+{{- if .HPA }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .AgentName }}
+  namespace: {{ .Namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .AgentName }}
+  minReplicas: {{ .HPA.MinReplicas }}
+  maxReplicas: {{ .HPA.MaxReplicas }}
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: synapse_broker_lag
+          selector:
+            matchExpressions:
+              - key: queue
+                operator: In
+                values:
+{{- range .HPA.ConsumeNamespaces }}
+                  - {{ . }}
+{{- end }}
+        target:
+          type: AverageValue
+          averageValue: "{{ .HPA.LagPerReplica }}"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: {{ .HPA.ScaleDownStabilizationSeconds }}
+{{- end }}

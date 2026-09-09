@@ -10,6 +10,8 @@ import (
 
 	broker "synapse/broker/internal"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
 
@@ -63,6 +65,11 @@ func startMetricsServer(s *broker.Server, port int, logger *zap.Logger) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(snapshots)
 	})
+
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(broker.NewLagCollector(s))
+	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+
 	addr := fmt.Sprintf(":%d", port)
 	logger.Info("started metrics server", zap.String("addr", addr))
 	if err := http.ListenAndServe(addr, mux); err != nil {
